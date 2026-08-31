@@ -1,4 +1,4 @@
-use crate::{Any, FourCC};
+use crate::{Any, FourCC, MAX_ATOM_DEPTH};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -16,6 +16,9 @@ pub enum Error {
 
     #[error("atom too large")]
     TooLarge(FourCC),
+
+    #[error("atoms nested more than {MAX_ATOM_DEPTH} deep: {0}")]
+    TooDeep(FourCC),
 
     #[error("invalid size")]
     InvalidSize,
@@ -68,9 +71,6 @@ pub enum Error {
 
     #[error("invalid parameter combination: {0}")]
     InvalidCombination(&'static str),
-
-    #[error("unknown codec in sample description box")]
-    UnknownCodec,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

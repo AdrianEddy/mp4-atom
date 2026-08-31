@@ -19,9 +19,18 @@ pub struct ElstEntry {
     /// Start time within the media of this edit, in media-timescale units
     /// (composition time). Signed on the wire (ISO/IEC 14496-12 §8.6.6): `None`
     /// is the `-1` "empty edit" sentinel -- a dwell with no media, used to signal
-    /// an initial presentation offset -- and `Some(t)` is a real, non-negative
-    /// media time. `t` must fit in an `i64` (the on-wire field is signed) to encode.
-    pub media_time: Option<u64>,
+    /// an initial presentation offset -- and `Some(t)` is the media time exactly
+    /// as written.
+    ///
+    /// `Some` is signed because `-1` is the only negative the spec defines and
+    /// files carry others anyway. `libavformat` refuses those only under
+    /// `FF_COMPLIANCE_STRICT` (`mov_read_elst`) and otherwise keeps the value,
+    /// treating it as an ordinary edit starting before the media -- NOT as an
+    /// empty edit, which is `-1` and nothing else. Refusing it here would fail
+    /// the whole `moov`, so a file ffmpeg opens would not open through this
+    /// crate. The decoder never yields `Some(-1)`; encoding it writes the same
+    /// bytes as `None`.
+    pub media_time: Option<i64>,
     // Signed 16.16 fixed-point playback rate (int(16).int(16) per §8.6.6). Always
     // present -- there is no "absent" sentinel; media_rate == 0 is a meaningful value
     // (a dwell, i.e. a frozen frame) rather than absence -- so it is not optional.
@@ -45,16 +54,11 @@ impl AtomExt for Elst {
                 ElstVersion::V0 => (u32::decode(buf)? as u64, i32::decode(buf)? as i64),
             };
 
-            // -1 is the only defined negative (empty edit); real media times are
-            // non-negative. Anything below -1 is out of spec.
+            // -1 is the empty edit; every other value, negative or not, is a
+            // media time carried as written.
             let media_time = match media_time {
                 -1 => None,
-                t if t >= 0 => Some(t as u64),
-                _ => {
-                    return Err(Error::Unsupported(
-                        "elst media_time must be -1 or non-negative",
-                    ))
-                }
+                t => Some(t),
             };
 
             entries.push(ElstEntry {
@@ -68,30 +72,25 @@ impl AtomExt for Elst {
     }
 
     fn encode_body_ext<B: BufMut>(&self, buf: &mut B) -> Result<ElstExt> {
-        // On the wire media_time is signed: None is the -1 empty edit, and a real
-        // media time must fit the signed 64-bit field.
-        fn wire_media_time(media_time: Option<u64>) -> Result<i64> {
-            match media_time {
-                None => Ok(-1),
-                Some(t) => i64::try_from(t)
-                    .map_err(|_| Error::Unsupported("elst media_time exceeds i64::MAX")),
-            }
+        // On the wire media_time is signed: None is the -1 empty edit.
+        fn wire_media_time(media_time: Option<i64>) -> i64 {
+            media_time.unwrap_or(-1)
         }
 
         // Prefer version 0 (32-bit) when every value fits: it matches what muxers
         // typically emit (so a V0 source round-trips byte-for-byte) and keeps the box
         // compact. segment_duration is unsigned int(32) but media_time is signed
-        // int(32), so their ceilings differ. Out-of-range media_time is validated (and
-        // -1 / None handled) below in the encode pass.
+        // int(32), so their ceilings differ.
         let use_v0 = !self.entries.iter().any(|e| {
             e.segment_duration > u32::MAX as u64
-                || e.media_time.is_some_and(|t| t > i32::MAX as u64)
+                || e.media_time
+                    .is_some_and(|t| t > i32::MAX as i64 || t < i32::MIN as i64)
         });
 
         (self.entries.len() as u32).encode(buf)?;
 
         for entry in &self.entries {
-            let media_time = wire_media_time(entry.media_time)?;
+            let media_time = wire_media_time(entry.media_time);
             if use_v0 {
                 (entry.segment_duration as u32).encode(buf)?;
                 (media_time as i32).encode(buf)?;
@@ -158,7 +157,7 @@ mod tests {
         let expected = Elst {
             entries: vec![ElstEntry {
                 segment_duration: 0,
-                media_time: Some(i32::MAX as u64 + 1),
+                media_time: Some(i32::MAX as i64 + 1),
                 media_rate: 1.into(),
             }],
         };
@@ -220,24 +219,32 @@ mod tests {
         assert_eq!(buf.as_slice(), raw);
     }
 
-    // A media_time below -1 is out of spec: decoding must fail rather than invent a
-    // value. Covered for both on-wire widths (version 0 int(32), version 1 int(64)).
+    // A media_time below -1 is out of spec, and files carry it anyway. ffmpeg
+    // rejects it only under FF_COMPLIANCE_STRICT (`mov_read_elst`), so refusing
+    // it here would fail the whole `moov` for a file ffmpeg opens. It is kept as
+    // written -- an ordinary edit, NOT the -1 empty edit -- and round-trips
+    // byte-for-byte. Covered for both on-wire widths (v0 int(32), v1 int(64)).
     #[test]
-    fn test_elst_negative_media_time_rejected_v0() {
+    fn test_elst_negative_media_time_kept_v0() {
         let raw: &[u8] = &[
             0x00, 0x00, 0x00, 0x1C, // box size = 28
             b'e', b'l', b's', b't', //
             0x00, 0x00, 0x00, 0x00, // version 0, flags 0
             0x00, 0x00, 0x00, 0x01, // entry_count = 1
             0x00, 0x00, 0x03, 0xE8, // segment_duration = 1000
-            0xFF, 0xFF, 0xFF, 0xFE, // media_time = -2 (invalid, 32-bit)
+            0xFF, 0xFF, 0xFF, 0xFE, // media_time = -2 (out of spec, 32-bit)
             0x00, 0x01, 0x00, 0x00, // media_rate = 1.0
         ];
-        assert!(Elst::decode(&mut &raw[..]).is_err());
+        let decoded = Elst::decode(&mut &raw[..]).unwrap();
+        assert_eq!(decoded.entries[0].media_time, Some(-2));
+
+        let mut buf = Vec::new();
+        decoded.encode(&mut buf).unwrap();
+        assert_eq!(buf.as_slice(), raw);
     }
 
     #[test]
-    fn test_elst_negative_media_time_rejected_v1() {
+    fn test_elst_negative_media_time_kept_v1() {
         let raw: &[u8] = &[
             0x00, 0x00, 0x00, 0x24, // box size = 36
             b'e', b'l', b's', b't', //
@@ -246,23 +253,31 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
             0xE8, // segment_duration = 1000 (64-bit)
             0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-            0xFE, // media_time = -2 (invalid, 64-bit)
+            0xFE, // media_time = -2 (out of spec, 64-bit)
             0x00, 0x01, 0x00, 0x00, // media_rate = 1.0
         ];
-        assert!(Elst::decode(&mut &raw[..]).is_err());
+        let decoded = Elst::decode(&mut &raw[..]).unwrap();
+        assert_eq!(decoded.entries[0].media_time, Some(-2));
+        // A negative that fits int(32) re-encodes as the compact version 0.
+        let mut buf = Vec::new();
+        decoded.encode(&mut buf).unwrap();
+        assert_eq!(buf[8], 0);
+        assert_eq!(Elst::decode(&mut buf.as_ref()).unwrap(), decoded);
     }
 
-    // A media_time that does not fit the signed on-wire field cannot be encoded.
+    // A negative below int(32) forces version 1, like any other out-of-range value.
     #[test]
-    fn test_elst_media_time_too_large_rejected() {
-        let elst = Elst {
+    fn test_elst_media_time_below_i32_forces_v1() {
+        let expected = Elst {
             entries: vec![ElstEntry {
                 segment_duration: 0,
-                media_time: Some(u64::MAX),
+                media_time: Some(i32::MIN as i64 - 1),
                 media_rate: 1.into(),
             }],
         };
         let mut buf = Vec::new();
-        assert!(elst.encode(&mut buf).is_err());
+        expected.encode(&mut buf).unwrap();
+        assert_eq!(buf[8], 1, "media_time below i32::MIN must use version 1");
+        assert_eq!(Elst::decode(&mut buf.as_ref()).unwrap(), expected);
     }
 }

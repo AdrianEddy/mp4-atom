@@ -69,6 +69,13 @@ macro_rules! any {
         impl DecodeAtom for Any {
             /// Decode the atom from a header and payload.
             fn decode_atom<B: Buf>(header: &Header, buf: &mut B) -> Result<Self> {
+                // A container's body is decoded by recursing back into here, so
+                // the file itself drives the recursion: without a limit, a few
+                // hundred bytes of one FourCC nested inside itself overflows
+                // the stack instead of returning an error. Every cycle passes
+                // through this function, so this is the only place it is needed.
+                let _depth = DepthGuard::enter(header.kind)?;
+
                 let size = header.size.unwrap_or(buf.remaining());
                 if size > buf.remaining() {
                     return Err(Error::OutOfBounds);
@@ -284,6 +291,7 @@ any! {
                             Mp4a,
                                 Esds,
                             Mp3,
+                            Mp4v,
                             Tx3g,
                                 Ftab,
                             Vp08, Vp09,
@@ -295,6 +303,12 @@ any! {
                             Uncv,
                                 Cmpd,
                                 UncC,
+                            // Geometry, on every visual sample entry. The inner
+                            // boxes are NOT listed: `sv3d/proj` (Google) and
+                            // `vexu/proj` (Apple) share the FourCC `proj`, and
+                            // `Any` resolves a FourCC to exactly one type, so
+                            // both parents dispatch their children positionally.
+                            Sv3d, St3d, Vexu, Hfov,
                             Flac,
                                 Dfla,
                             Ac3,

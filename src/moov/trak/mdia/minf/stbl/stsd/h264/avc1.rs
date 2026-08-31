@@ -10,6 +10,14 @@ pub struct Avc1 {
     pub pasp: Option<Pasp>,
     pub taic: Option<Taic>,
     pub fiel: Option<Fiel>,
+    /// Google Spherical Video V2 — how this track's picture maps onto a sphere.
+    pub sv3d: Option<Sv3d>,
+    /// Google Spherical Video V2 — the stereo frame packing.
+    pub st3d: Option<St3d>,
+    /// Apple Projected Media Profile — projection, eyes and frame packing.
+    pub vexu: Option<Vexu>,
+    /// Apple Projected Media Profile — horizontal field of view.
+    pub hfov: Option<Hfov>,
 }
 
 impl Atom for Avc1 {
@@ -24,6 +32,10 @@ impl Atom for Avc1 {
         let mut pasp = None;
         let mut taic = None;
         let mut fiel = None;
+        let mut sv3d = None;
+        let mut st3d = None;
+        let mut vexu = None;
+        let mut hfov = None;
         while let Some(atom) = Any::decode_maybe(buf)? {
             match atom {
                 Any::Avcc(atom) => avcc = atom.into(),
@@ -32,6 +44,10 @@ impl Atom for Avc1 {
                 Any::Pasp(atom) => pasp = atom.into(),
                 Any::Taic(atom) => taic = atom.into(),
                 Any::Fiel(atom) => fiel = atom.into(),
+                Any::Sv3d(atom) => sv3d = Some(atom),
+                Any::St3d(atom) => st3d = Some(atom),
+                Any::Vexu(atom) => vexu = Some(atom),
+                Any::Hfov(atom) => hfov = Some(atom),
                 unknown => Self::decode_unknown(&unknown)?,
             }
         }
@@ -45,6 +61,10 @@ impl Atom for Avc1 {
             pasp,
             taic,
             fiel,
+            sv3d,
+            st3d,
+            vexu,
+            hfov,
         })
     }
 
@@ -56,6 +76,10 @@ impl Atom for Avc1 {
         self.pasp.encode(buf)?;
         self.taic.encode(buf)?;
         self.fiel.encode(buf)?;
+        self.sv3d.encode(buf)?;
+        self.st3d.encode(buf)?;
+        self.vexu.encode(buf)?;
+        self.hfov.encode(buf)?;
         Ok(())
     }
 }
@@ -95,6 +119,10 @@ mod tests {
             pasp: None,
             taic: None,
             fiel: None,
+            sv3d: None,
+            st3d: None,
+            vexu: None,
+            hfov: None,
         };
         let mut buf = Vec::new();
         expected.encode(&mut buf).unwrap();
@@ -212,6 +240,10 @@ mod tests {
                 field_count: 2,
                 field_order: 0,
             }),
+            sv3d: None,
+            st3d: None,
+            vexu: None,
+            hfov: None,
         };
         let mut buf = Vec::new();
         expected.encode(&mut buf).unwrap();

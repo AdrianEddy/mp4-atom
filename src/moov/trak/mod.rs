@@ -22,6 +22,10 @@ pub struct Trak {
     pub senc: Option<Senc>,
     pub tref: Option<Tref>,
     pub udta: Option<Udta>,
+    /// Extended-type boxes carried directly by this track, in file order.
+    /// Spherical Video V1 rides one of these
+    /// (`ffcc8263-f855-4a93-8814-587a02521fdd`).
+    pub uuid: Vec<Uuid>,
 }
 
 impl Atom for Trak {
@@ -30,6 +34,6 @@ impl Atom for Trak {
     nested! {
         required: [ Tkhd, Mdia ],
         optional: [ Edts, Meta, Senc, Tref, Udta ],
-        multiple: [],
+        multiple: [ Uuid ],
     }
 }

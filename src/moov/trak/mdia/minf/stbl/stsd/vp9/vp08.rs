@@ -9,6 +9,14 @@ pub struct Vp08 {
     pub btrt: Option<Btrt>,
     pub colr: Option<Colr>,
     pub pasp: Option<Pasp>,
+    /// Google Spherical Video V2 — how this track's picture maps onto a sphere.
+    pub sv3d: Option<Sv3d>,
+    /// Google Spherical Video V2 — the stereo frame packing.
+    pub st3d: Option<St3d>,
+    /// Apple Projected Media Profile — projection, eyes and frame packing.
+    pub vexu: Option<Vexu>,
+    /// Apple Projected Media Profile — horizontal field of view.
+    pub hfov: Option<Hfov>,
 }
 
 impl Atom for Vp08 {
@@ -21,12 +29,20 @@ impl Atom for Vp08 {
         let mut btrt = None;
         let mut colr = None;
         let mut pasp = None;
+        let mut sv3d = None;
+        let mut st3d = None;
+        let mut vexu = None;
+        let mut hfov = None;
         while let Some(atom) = Any::decode_maybe(buf)? {
             match atom {
                 Any::VpcC(atom) => vpcc = atom.into(),
                 Any::Btrt(atom) => btrt = atom.into(),
                 Any::Colr(atom) => colr = atom.into(),
                 Any::Pasp(atom) => pasp = atom.into(),
+                Any::Sv3d(atom) => sv3d = Some(atom),
+                Any::St3d(atom) => st3d = Some(atom),
+                Any::Vexu(atom) => vexu = Some(atom),
+                Any::Hfov(atom) => hfov = Some(atom),
                 unknown => Self::decode_unknown(&unknown)?,
             }
         }
@@ -38,6 +54,10 @@ impl Atom for Vp08 {
             btrt,
             colr,
             pasp,
+            sv3d,
+            st3d,
+            vexu,
+            hfov,
         })
     }
 
@@ -47,6 +67,10 @@ impl Atom for Vp08 {
         self.btrt.encode(buf)?;
         self.colr.encode(buf)?;
         self.pasp.encode(buf)?;
+        self.sv3d.encode(buf)?;
+        self.st3d.encode(buf)?;
+        self.vexu.encode(buf)?;
+        self.hfov.encode(buf)?;
 
         Ok(())
     }
