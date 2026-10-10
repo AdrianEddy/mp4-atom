@@ -1,5 +1,7 @@
 use crate::*;
 
+use super::skip_child;
+
 /// `vexu` — Apple's **Video Extended Usage** box, a child of a visual sample
 /// entry. The container half of Apple Projected/Immersive Media Profile
 /// (spatial video, APMP):
@@ -50,10 +52,7 @@ impl Atom for Vexu {
                     }
                     out.pack = Some(Pack::decode_atom(&header, buf)?);
                 }
-                _ => {
-                    let unknown = Any::decode_atom(&header, buf)?;
-                    Self::decode_unknown(&unknown)?;
-                }
+                _ => skip_child(&header, buf, Self::KIND)?,
             }
         }
         skip_trailing_padding(buf);
@@ -89,10 +88,7 @@ impl Atom for VexuProj {
                     }
                     prji = Some(Prji::decode_atom(&header, buf)?);
                 }
-                _ => {
-                    let unknown = Any::decode_atom(&header, buf)?;
-                    Self::decode_unknown(&unknown)?;
-                }
+                _ => skip_child(&header, buf, Self::KIND)?,
             }
         }
         skip_trailing_padding(buf);
@@ -192,10 +188,7 @@ impl Atom for Eyes {
                     }
                     out.cmfy = Some(Cmfy::decode_atom(&header, buf)?);
                 }
-                _ => {
-                    let unknown = Any::decode_atom(&header, buf)?;
-                    Self::decode_unknown(&unknown)?;
-                }
+                _ => skip_child(&header, buf, Self::KIND)?,
             }
         }
         skip_trailing_padding(buf);
@@ -301,10 +294,7 @@ impl Atom for Cams {
                     }
                     blin = Some(Blin::decode_atom(&header, buf)?);
                 }
-                _ => {
-                    let unknown = Any::decode_atom(&header, buf)?;
-                    Self::decode_unknown(&unknown)?;
-                }
+                _ => skip_child(&header, buf, Self::KIND)?,
             }
         }
         skip_trailing_padding(buf);
@@ -362,10 +352,7 @@ impl Atom for Cmfy {
                     }
                     dadj = Some(Dadj::decode_atom(&header, buf)?);
                 }
-                _ => {
-                    let unknown = Any::decode_atom(&header, buf)?;
-                    Self::decode_unknown(&unknown)?;
-                }
+                _ => skip_child(&header, buf, Self::KIND)?,
             }
         }
         skip_trailing_padding(buf);
@@ -429,10 +416,7 @@ impl Atom for Pack {
                     }
                     out.pkin = Some(Pkin::decode_atom(&header, buf)?);
                 }
-                _ => {
-                    let unknown = Any::decode_atom(&header, buf)?;
-                    Self::decode_unknown(&unknown)?;
-                }
+                _ => skip_child(&header, buf, Self::KIND)?,
             }
         }
         skip_trailing_padding(buf);

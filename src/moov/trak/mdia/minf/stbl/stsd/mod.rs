@@ -424,6 +424,24 @@ impl AtomExt for Stsd {
     }
 }
 
+/// Skip a child that a box dispatching its children by FourCC does not model:
+/// `free`/`skip` padding silently, anything else through `decode_unknown`.
+///
+/// The child is not decoded through `Any`: `sv3d` and `vexu` both contain an
+/// unrelated `proj`, so a FourCC means something else inside them.
+fn skip_child<B: Buf>(header: &Header, buf: &mut B, parent: FourCC) -> Result<()> {
+    let size = header.size.unwrap_or(buf.remaining());
+    if size > buf.remaining() {
+        return Err(Error::OutOfBounds);
+    }
+    if header.kind != Free::KIND && header.kind != Skip::KIND {
+        let body = Vec::decode(&mut buf.slice(size))?;
+        crate::decode_unknown(&Any::Unknown(header.kind, body), parent)?;
+    }
+    buf.advance(size);
+    Ok(())
+}
+
 mod tests {
     #![cfg(not(feature = "strict"))]
 

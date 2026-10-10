@@ -1,5 +1,7 @@
 use crate::*;
 
+use super::skip_child;
+
 /// `sv3d` — the Spherical Video Box of **Google Spherical Video V2**.
 ///
 /// A sibling of `colr` inside a visual sample entry, describing how the track's
@@ -54,10 +56,7 @@ impl Atom for Sv3d {
                     }
                     proj = Some(Proj::decode_atom(&header, buf)?);
                 }
-                _ => {
-                    let unknown = Any::decode_atom(&header, buf)?;
-                    Self::decode_unknown(&unknown)?;
-                }
+                _ => skip_child(&header, buf, Self::KIND)?,
             }
         }
 
@@ -123,36 +122,25 @@ impl Atom for Proj {
         let mut prhd = None;
         let mut kind: Option<ProjKind> = None;
 
-        // A helper so each projection-data arm reports the same duplicate error.
-        macro_rules! set_kind {
-            ($variant:ident, $ty:ident, $header:expr) => {{
-                if kind.is_some() {
-                    return Err(Error::DuplicateBox($ty::KIND));
-                }
-                kind = Some(ProjKind::$variant($ty::decode_atom($header, buf)?));
-            }};
-        }
-
         while let Some(header) = Header::decode_maybe(buf)? {
-            match header.kind {
+            let projection = match header.kind {
                 Prhd::KIND => {
                     if prhd.is_some() {
                         return Err(Error::DuplicateBox(Prhd::KIND));
                     }
                     prhd = Some(Prhd::decode_atom(&header, buf)?);
+                    continue;
                 }
-                Equi::KIND => set_kind!(Equi, Equi, &header),
-                Cbmp::KIND => set_kind!(Cbmp, Cbmp, &header),
-                Mshp::KIND => set_kind!(Mshp, Mshp, &header),
-                // Anything else here IS the projection data box: `proj` holds
-                // `prhd` plus exactly one of them, and the box is explicitly
-                // extensible, so a FourCC this crate does not model is a
-                // projection from a later revision rather than a broken file.
-                // Kept verbatim so a re-encode does not drop it.
-                _ => {
-                    if kind.is_some() {
-                        return Err(Error::DuplicateBox(header.kind));
-                    }
+                Equi::KIND => ProjKind::Equi(Equi::decode_atom(&header, buf)?),
+                Cbmp::KIND => ProjKind::Cbmp(Cbmp::decode_atom(&header, buf)?),
+                Mshp::KIND => ProjKind::Mshp(Mshp::decode_atom(&header, buf)?),
+                // `proj` holds `prhd` plus exactly one projection data box, and
+                // the set is explicitly extensible, so a FourCC this crate does
+                // not model is a projection from a later revision rather than a
+                // broken file. Kept verbatim so a re-encode does not drop it —
+                // but only while nothing else names the projection. Beside one,
+                // it is an ordinary unexpected box, not a second projection.
+                _ if kind.is_none() && header.kind != Free::KIND && header.kind != Skip::KIND => {
                     let size = header.size.unwrap_or(buf.remaining());
                     if size > buf.remaining() {
                         return Err(Error::OutOfBounds);
@@ -160,7 +148,23 @@ impl Atom for Proj {
                     let data = buf.slice(size).to_vec();
                     buf.advance(size);
                     kind = Some(ProjKind::Unknown(header.kind, data));
+                    continue;
                 }
+                _ => {
+                    skip_child(&header, buf, Self::KIND)?;
+                    continue;
+                }
+            };
+
+            // A modelled projection takes the place of an unmodelled one, which
+            // is then reported like any other unexpected box. Two modelled
+            // projections are a broken box.
+            match kind.replace(projection) {
+                None => {}
+                Some(ProjKind::Unknown(four_cc, data)) => {
+                    Self::decode_unknown(&Any::Unknown(four_cc, data))?
+                }
+                Some(_) => return Err(Error::DuplicateBox(header.kind)),
             }
         }
         skip_trailing_padding(buf);

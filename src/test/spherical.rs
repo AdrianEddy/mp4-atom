@@ -256,6 +256,102 @@ fn sv3d_without_proj_is_tolerated() {
     assert_eq!(decoded.svhd.as_ref().unwrap().metadata_source, "x");
 }
 
+/// Two modelled projection data boxes are a broken `proj`.
+#[test]
+fn sv3d_two_projections_are_a_duplicate() {
+    let sv3d = boxed(
+        b"sv3d",
+        &boxed(
+            b"proj",
+            &concat(&[full(b"equi", &[0u8; 16]), full(b"cbmp", &[0u8; 8])]),
+        ),
+    );
+    assert!(matches!(
+        Sv3d::decode(&mut sv3d.as_slice()),
+        Err(Error::DuplicateBox(kind)) if kind == Cbmp::KIND
+    ));
+}
+
+/// An unmodelled box beside a modelled projection is not a second projection,
+/// in either order: it goes through the usual unknown-box handling, which is an
+/// error in tests and with the `strict` feature and a warning otherwise. Taken
+/// for a projection, it made the `proj` — and with it the whole `moov` — a
+/// `DuplicateBox`.
+#[test]
+fn sv3d_unmodelled_box_beside_a_projection_is_an_unexpected_box() {
+    let equi = full(b"equi", &[0u8; 16]);
+    let fish = full(b"fish", &[0u8; 4]);
+    for children in [
+        concat(&[equi.clone(), fish.clone()]),
+        concat(&[fish.clone(), equi.clone()]),
+    ] {
+        let sv3d = boxed(b"sv3d", &boxed(b"proj", &children));
+        assert!(matches!(
+            Sv3d::decode(&mut sv3d.as_slice()),
+            Err(Error::UnexpectedBox(kind)) if kind == FourCC::new(b"fish")
+        ));
+    }
+}
+
+/// `free`/`skip` padding inside `sv3d` and `proj` is dropped, and never taken
+/// for an unmodelled projection.
+#[test]
+fn sv3d_skips_free_and_skip_boxes() {
+    let free = boxed(b"free", &[0u8; 4]);
+    let skip = boxed(b"skip", &[]);
+    let equi = full(b"equi", &[0u8; 16]);
+    let sv3d = boxed(
+        b"sv3d",
+        &concat(&[
+            free.clone(),
+            boxed(
+                b"proj",
+                &concat(&[skip.clone(), equi.clone(), free.clone()]),
+            ),
+        ]),
+    );
+    let decoded = Sv3d::decode(&mut sv3d.as_slice()).expect("padding is not an error");
+    assert!(matches!(
+        decoded.proj.as_ref().unwrap().kind,
+        Some(ProjKind::Equi(_))
+    ));
+    let mut out = Vec::new();
+    decoded.encode(&mut out).unwrap();
+    assert_eq!(
+        out,
+        boxed(b"sv3d", &boxed(b"proj", &equi)),
+        "padding is not kept"
+    );
+
+    let sv3d = boxed(
+        b"sv3d",
+        &boxed(
+            b"proj",
+            &concat(&[free, full(b"fish", &[1, 2, 3, 4]), skip]),
+        ),
+    );
+    let decoded = Sv3d::decode(&mut sv3d.as_slice()).expect("padding is not an error");
+    assert_eq!(
+        decoded.proj.as_ref().unwrap().kind,
+        Some(ProjKind::Unknown(
+            FourCC::new(b"fish"),
+            vec![0, 0, 0, 0, 1, 2, 3, 4]
+        ))
+    );
+}
+
+/// `free`/`skip` padding inside `vexu` is dropped.
+#[test]
+fn vexu_skips_free_and_skip_boxes() {
+    let proj = boxed(
+        b"proj",
+        &concat(&[boxed(b"skip", &[]), full(b"prji", b"equi")]),
+    );
+    let vexu = boxed(b"vexu", &concat(&[boxed(b"free", &[0u8; 4]), proj]));
+    let decoded = Vexu::decode(&mut vexu.as_slice()).expect("padding is not an error");
+    assert_eq!(decoded.proj.unwrap().prji.projection, Prji::EQUIRECTANGULAR);
+}
+
 /// Padding after the last child of `sv3d` or `proj`, which every other
 /// container atom in the crate already tolerates. Without the drain the
 /// leftover bytes are an `UnderDecode` that fails the sample entry, and with it
