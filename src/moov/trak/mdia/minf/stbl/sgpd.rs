@@ -74,7 +74,7 @@ impl AtomExt for Sgpd {
             } else {
                 default_length
             };
-            let entry = AnySampleGroupEntry::decode(grouping_type, buf)?;
+            let entry = AnySampleGroupEntry::decode(grouping_type, description_length, buf)?;
             entries.push(SgpdEntry {
                 description_length,
                 entry,
@@ -139,7 +139,15 @@ pub enum AnySampleGroupEntry {
 }
 
 impl AnySampleGroupEntry {
-    fn decode<B: Buf>(grouping_type: FourCC, buf: &mut B) -> Result<Self> {
+    /// Decode one entry. An entry of a grouping type this crate does not model
+    /// is `description_length` bytes when the box states it (version ≥ 1) — so
+    /// several of them read back as several — and the rest of the box only in a
+    /// version-0 `sgpd`, which carries no entry length.
+    fn decode<B: Buf>(
+        grouping_type: FourCC,
+        description_length: Option<u32>,
+        buf: &mut B,
+    ) -> Result<Self> {
         match grouping_type {
             REFS_4CC => {
                 let sample_id = u32::decode(buf)?;
@@ -154,7 +162,13 @@ impl AnySampleGroupEntry {
                     direct_reference_samples,
                 ))
             }
-            _ => Ok(Self::UnknownGroupingType(grouping_type, Vec::decode(buf)?)),
+            _ => {
+                let bytes = match description_length {
+                    Some(len) => Vec::decode_exact(buf, len as usize)?,
+                    None => Vec::decode(buf)?,
+                };
+                Ok(Self::UnknownGroupingType(grouping_type, bytes))
+            }
         }
     }
 
@@ -235,6 +249,30 @@ mod tests {
         let mut buf = Vec::new();
         sgpd.encode(&mut buf).expect("encode should be successful");
         assert_eq!(SIMPLE_SGPD, &buf);
+    }
+
+    #[test]
+    fn several_entries_of_an_unmodelled_grouping_type_read_back_as_several() {
+        let roll = |distance: i16| SgpdEntry {
+            description_length: Some(2),
+            entry: AnySampleGroupEntry::UnknownGroupingType(
+                FourCC::from(b"roll"),
+                distance.to_be_bytes().to_vec(),
+            ),
+        };
+        let sgpd = Sgpd {
+            grouping_type: FourCC::from(b"roll"),
+            default_length: Some(2),
+            default_group_description_index: None,
+            static_group_description: false,
+            static_mapping: false,
+            essential: false,
+            entries: vec![roll(-4), roll(-32)],
+        };
+        let mut buf = Vec::new();
+        sgpd.encode(&mut buf).expect("encode should be successful");
+        let decoded = Sgpd::decode(&mut Cursor::new(buf.as_slice())).expect("decode");
+        assert_eq!(decoded, sgpd, "each entry is its own two bytes");
     }
 
     // From the MPEG File Format Conformance suite, heif/C041.heic
