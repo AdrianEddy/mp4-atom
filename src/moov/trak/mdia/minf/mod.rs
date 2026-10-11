@@ -1,4 +1,5 @@
 mod dinf;
+mod gmhd;
 mod hmhd;
 mod nmhd;
 mod smhd;
@@ -7,6 +8,7 @@ mod sthd;
 mod vmhd;
 
 pub use dinf::*;
+pub use gmhd::*;
 pub use hmhd::*;
 pub use nmhd::*;
 pub use smhd::*;
@@ -24,6 +26,8 @@ pub struct Minf {
     pub nmhd: Option<Nmhd>,
     pub sthd: Option<Sthd>,
     pub hmhd: Option<Hmhd>,
+    /// QuickTime base media information header — a timecode / text track's.
+    pub gmhd: Option<Gmhd>,
     pub dinf: Dinf,
     pub stbl: Stbl,
 }
@@ -33,7 +37,7 @@ impl Atom for Minf {
 
     nested! {
         required: [ Dinf, Stbl ],
-        optional: [ Vmhd, Smhd, Nmhd, Sthd, Hmhd ],
+        optional: [ Vmhd, Smhd, Nmhd, Sthd, Hmhd, Gmhd ],
         multiple: [],
     }
 }
