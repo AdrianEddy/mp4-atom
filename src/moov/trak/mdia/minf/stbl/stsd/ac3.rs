@@ -17,9 +17,16 @@ impl Atom for Ac3 {
 
         let mut dac3 = None;
 
+        // The `dac3` sits directly under `ac-3` (ISO-BMFF) or nested inside a
+        // QuickTime `wave` (siDecompressionParam) box (QTFF).
         while let Some(atom) = Any::decode_maybe(buf)? {
             match atom {
                 Any::Ac3SpecificBox(atom) => dac3 = atom.into(),
+                Any::Unknown(kind, body) if kind == WAVE => {
+                    if let Some(atom) = wave_child::<Ac3SpecificBox>(&body)? {
+                        dac3 = Some(atom);
+                    }
+                }
                 unknown => Self::decode_unknown(&unknown)?,
             }
         }
@@ -36,6 +43,25 @@ impl Atom for Ac3 {
         self.dac3.encode(buf)?;
         Ok(())
     }
+}
+
+/// QuickTime `wave` (siDecompressionParam) container FourCC.
+pub(super) const WAVE: FourCC = FourCC::new(b"wave");
+
+/// The `T` box a QuickTime `wave` body wraps, if any. Every other child (the
+/// `frma` format box, the terminator) is skipped by size, not typed-decoded.
+pub(super) fn wave_child<T: Atom>(mut wave: &[u8]) -> Result<Option<T>> {
+    while let Some(header) = Header::decode_maybe(&mut wave)? {
+        let size = match header.size {
+            Some(size) if size <= wave.remaining() => size,
+            _ => break,
+        };
+        if header.kind == T::KIND {
+            return Ok(Some(T::decode_body(&mut wave.slice(size))?));
+        }
+        wave.advance(size);
+    }
+    Ok(None)
 }
 
 // AC-3 specific data
@@ -90,6 +116,43 @@ impl Atom for Ac3SpecificBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ac3_dac3_inside_a_quicktime_wave() {
+        let dac3 = Ac3SpecificBox {
+            fscod: 0,
+            bsid: 8,
+            bsmod: 0,
+            acmod: 7,
+            lfeon: true,
+            bit_rate_code: 15,
+        };
+        let mut dac3_box = Vec::new();
+        dac3.encode(&mut dac3_box).unwrap();
+        let mut wave = Vec::new();
+        wave.extend_from_slice(&((8 + 12 + dac3_box.len()) as u32).to_be_bytes());
+        wave.extend_from_slice(b"wave");
+        wave.extend_from_slice(&12u32.to_be_bytes());
+        wave.extend_from_slice(b"frma");
+        wave.extend_from_slice(b"ac-3");
+        wave.extend_from_slice(&dac3_box);
+        let audio = Audio {
+            data_reference_index: 1,
+            channel_count: 6,
+            sample_size: 16,
+            sample_rate: 48000.into(),
+        };
+        let mut body = Vec::new();
+        audio.encode(&mut body).unwrap();
+        body.extend_from_slice(&wave);
+        let mut entry = Vec::new();
+        entry.extend_from_slice(&((8 + body.len()) as u32).to_be_bytes());
+        entry.extend_from_slice(b"ac-3");
+        entry.extend_from_slice(&body);
+
+        let ac3 = Ac3::decode(&mut std::io::Cursor::new(&entry)).expect("failed to decode ac-3");
+        assert_eq!(ac3.dac3, dac3);
+    }
 
     // Streaminfo metadata block only
     const ENCODED_AC3: &[u8] = &[

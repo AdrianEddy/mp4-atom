@@ -17,9 +17,16 @@ impl Atom for Eac3 {
 
         let mut dec3 = None;
 
+        // The `dec3` sits directly under `ec-3` (ISO-BMFF) or nested inside a
+        // QuickTime `wave` (siDecompressionParam) box (QTFF).
         while let Some(atom) = Any::decode_maybe(buf)? {
             match atom {
                 Any::Ec3SpecificBox(atom) => dec3 = atom.into(),
+                Any::Unknown(kind, body) if kind == super::ac3::WAVE => {
+                    if let Some(atom) = super::ac3::wave_child::<Ec3SpecificBox>(&body)? {
+                        dec3 = Some(atom);
+                    }
+                }
                 unknown => Self::decode_unknown(&unknown)?,
             }
         }
@@ -57,6 +64,10 @@ pub struct Ec3IndependentSubstream {
 pub struct Ec3SpecificBox {
     pub data_rate: u16,
     pub substreams: Vec<Ec3IndependentSubstream>,
+    /// The Dolby Atmos (JOC) extension: `flag_ec3_extension_type_a` set, with
+    /// this `complexity_index_type_a` — the byte pair a JOC stream's `dec3`
+    /// carries after the substreams.
+    pub complexity_index_type_a: Option<u8>,
 }
 
 impl Atom for Ec3SpecificBox {
@@ -108,11 +119,20 @@ impl Atom for Ec3SpecificBox {
             }
         }
 
-        // reserved bits may follow
+        // Reserved bits may follow; a JOC stream's first trailing byte carries
+        // `flag_ec3_extension_type_a` in its LSB, then the complexity index.
+        let mut complexity_index_type_a = None;
+        if buf.remaining() >= 2 {
+            let flags = u8::decode(buf)?;
+            if flags & 0x01 == 0x01 {
+                complexity_index_type_a = Some(u8::decode(buf)?);
+            }
+        }
         buf.advance(buf.remaining());
         Ok(Self {
             data_rate,
             substreams,
+            complexity_index_type_a,
         })
     }
 
@@ -137,6 +157,11 @@ impl Atom for Ec3SpecificBox {
                 let b = substream.num_dep_sub << 1;
                 b.encode(buf)?;
             }
+        }
+        if let Some(complexity) = self.complexity_index_type_a {
+            // 7 reserved bits, then `flag_ec3_extension_type_a`.
+            0x01u8.encode(buf)?;
+            complexity.encode(buf)?;
         }
         Ok(())
     }
@@ -180,7 +205,8 @@ mod tests {
                         lfeon: false,
                         num_dep_sub: 0,
                         chan_loc: None
-                    }]
+                    }],
+                    complexity_index_type_a: None,
                 }
             }
         );
@@ -207,6 +233,7 @@ mod tests {
                     num_dep_sub: 0,
                     chan_loc: None,
                 }],
+                complexity_index_type_a: None,
             },
         };
 
@@ -238,6 +265,7 @@ mod tests {
                     num_dep_sub: 2,
                     chan_loc: Some(0x1FF),
                 }],
+                complexity_index_type_a: None,
             },
         };
 
@@ -287,6 +315,7 @@ mod tests {
                         chan_loc: None,
                     },
                 ],
+                complexity_index_type_a: None,
             },
         };
 
@@ -303,6 +332,39 @@ mod tests {
     }
 
     #[test]
+    fn test_eac3_joc_extension_round_trips() {
+        // A Dolby Atmos (JOC) stream: the trailing flag byte and complexity index.
+        let eac3 = Eac3 {
+            audio: Audio {
+                data_reference_index: 1,
+                channel_count: 6,
+                sample_size: 16,
+                sample_rate: 48000.into(),
+            },
+            dec3: Ec3SpecificBox {
+                data_rate: 768,
+                substreams: vec![Ec3IndependentSubstream {
+                    fscod: 0,
+                    bsid: 16,
+                    asvc: false,
+                    bsmod: 0,
+                    acmod: 7,
+                    lfeon: true,
+                    num_dep_sub: 0,
+                    chan_loc: None,
+                }],
+                complexity_index_type_a: Some(16),
+            },
+        };
+        let mut buf = Vec::new();
+        eac3.encode(&mut buf).unwrap();
+        assert_eq!(&buf[buf.len() - 2..], &[0x01, 16]);
+        let decoded =
+            Eac3::decode(&mut std::io::Cursor::new(&buf)).expect("failed to decode eac-3");
+        assert_eq!(decoded, eac3);
+    }
+
+    #[test]
     fn test_eac3_with_reserved_bits() {
         // Test case with reserved bits following the substream data
         // This simulates a dec3 box with extra padding/reserved bits at the end
@@ -315,7 +377,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x0f, 0x64, 0x65, 0x63, 0x33, // dec3 header (size 15 bytes)
             0x5f, 0xc0, // header: data_rate=3064, num_ind_sub=0
             0x60, 0x04, 0x00, // substream data
-            0xAB, 0xCD, // extra reserved bits (2 bytes)
+            0xAA, 0xCD, // extra reserved bits (2 bytes; LSB 0: no JOC extension)
         ];
 
         let mut cursor = std::io::Cursor::new(encoded_with_reserved);
@@ -342,7 +404,8 @@ mod tests {
                         lfeon: false,
                         num_dep_sub: 0,
                         chan_loc: None
-                    }]
+                    }],
+                    complexity_index_type_a: None,
                 }
             }
         );
