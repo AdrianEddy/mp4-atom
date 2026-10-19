@@ -157,3 +157,20 @@ macro_rules! ext {
 }
 
 pub(crate) use ext;
+
+/// Whether a header box (`mvhd`, `tkhd`, `mdhd`) needs its version-1 form: a
+/// time or duration that does not fit 32 bits. Every other box is written in
+/// version 0, as other muxers write it and as QuickTime readers that know only
+/// the version-0 layout (QTFF documents no other) require.
+pub(crate) fn needs_version_1(values: &[u64]) -> bool {
+    values.iter().any(|&v| v > u64::from(u32::MAX))
+}
+
+/// A header box's time or duration: 64-bit in version 1, else 32-bit.
+pub(crate) fn encode_time<B: BufMut>(value: u64, version_1: bool, buf: &mut B) -> Result<()> {
+    if version_1 {
+        value.encode(buf)
+    } else {
+        (value as u32).encode(buf)
+    }
+}

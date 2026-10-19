@@ -67,10 +67,11 @@ impl AtomExt for Mvhd {
     }
 
     fn encode_body_ext<B: BufMut>(&self, buf: &mut B) -> Result<MvhdExt> {
-        self.creation_time.encode(buf)?;
-        self.modification_time.encode(buf)?;
+        let v1 = needs_version_1(&[self.creation_time, self.modification_time, self.duration]);
+        encode_time(self.creation_time, v1, buf)?;
+        encode_time(self.modification_time, v1, buf)?;
         self.timescale.encode(buf)?;
-        self.duration.encode(buf)?;
+        encode_time(self.duration, v1, buf)?;
 
         self.rate.encode(buf)?;
         self.volume.encode(buf)?;
@@ -84,7 +85,7 @@ impl AtomExt for Mvhd {
 
         self.next_track_id.encode(buf)?;
 
-        Ok(MvhdVersion::V1.into())
+        Ok(if v1 { MvhdVersion::V1 } else { MvhdVersion::V0 }.into())
     }
 }
 

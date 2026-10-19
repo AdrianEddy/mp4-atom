@@ -86,11 +86,12 @@ impl AtomExt for Tkhd {
     }
 
     fn encode_body_ext<B: BufMut>(&self, buf: &mut B) -> Result<TkhdExt> {
-        self.creation_time.encode(buf)?;
-        self.modification_time.encode(buf)?;
+        let v1 = needs_version_1(&[self.creation_time, self.modification_time, self.duration]);
+        encode_time(self.creation_time, v1, buf)?;
+        encode_time(self.modification_time, v1, buf)?;
         self.track_id.encode(buf)?;
         0u32.encode(buf)?; // reserved
-        self.duration.encode(buf)?;
+        encode_time(self.duration, v1, buf)?;
 
         0u64.encode(buf)?; // reserved
         self.layer.encode(buf)?;
@@ -103,7 +104,7 @@ impl AtomExt for Tkhd {
         self.height.encode(buf)?;
 
         Ok(TkhdExt {
-            version: TkhdVersion::V1,
+            version: if v1 { TkhdVersion::V1 } else { TkhdVersion::V0 },
             track_enabled: self.enabled,
             track_in_movie: self.in_movie,
             // track_in_preview has no assigned meaning; per ISO/IEC
