@@ -61,6 +61,7 @@ fn bbb() {
                     hdlr: Hdlr {
                         handler: b"vide".into(),
                         name: "(C) 2007 Google Inc. v08.13.2007.".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         vmhd: Vmhd {
@@ -147,6 +148,7 @@ fn bbb() {
                     hdlr: Hdlr {
                         handler: b"soun".into(),
                         name: "(C) 2007 Google Inc. v08.13.2007.".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         smhd: Some(Smhd {
@@ -211,7 +213,7 @@ fn bbb() {
             }],
             udta: Some(Udta {
                 meta: Some(Meta {
-                    hdlr: Hdlr{ handler: FourCC::new(b"mdir"), name: "".into() },
+                    hdlr: Hdlr { handler: FourCC::new(b"mdir"), name: "".into(), component_type: None },
                     items: vec![Ilst { name: None, year: None, covr: None, desc: None, ctoo: Some(Tool { country_indicator: 0, language_indicator: 0, text: "Lavf61.1.100".into()}), cprt: None, mdta: vec![] }.into(),],
                 }),
                 ..Default::default()

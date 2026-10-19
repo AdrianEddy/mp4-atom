@@ -81,6 +81,7 @@ fn uncompressed() {
                     hdlr: Hdlr {
                         handler: FourCC::new(b"vide"),
                         name: "GPAC ISO Video Handler".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         vmhd: Some(Vmhd {
@@ -225,7 +226,8 @@ fn uncompressed() {
                 meta: Some(Meta {
                     hdlr: Hdlr {
                         handler: FourCC::new(b"mdir"),
-                        name: "".into()
+                        name: "".into(),
+                        component_type: None,
                     },
                     items: vec![Ilst {
                         name: None,

@@ -109,6 +109,7 @@ fn mebx() {
                         hdlr: Hdlr {
                             handler: FourCC::new(b"vide"),
                             name: "vide".into(),
+                            component_type: None,
                         },
                         minf: Minf {
                             vmhd: Some(Vmhd {
@@ -266,6 +267,7 @@ fn mebx() {
                         hdlr: Hdlr {
                             handler: FourCC::new(b"meta"),
                             name: "meta".into(),
+                            component_type: None,
                         },
                         minf: Minf {
                             nmhd: Some(Nmhd {}),

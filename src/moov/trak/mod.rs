@@ -31,9 +31,12 @@ pub struct Trak {
 impl Atom for Trak {
     const KIND: FourCC = FourCC::new(b"trak");
 
+    // QuickTime's order (QTFF), which FFmpeg's `movenc` writes too: the edit
+    // list and the track references before the media.
     nested! {
         required: [ Tkhd, Mdia ],
         optional: [ Edts, Meta, Senc, Tref, Udta ],
         multiple: [ Uuid ],
+        order: [ Tkhd, Edts, Tref, Meta, Mdia, Senc, Udta, Uuid ],
     }
 }

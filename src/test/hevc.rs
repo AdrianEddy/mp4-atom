@@ -86,7 +86,8 @@ fn hevc() {
                     },
                     hdlr: Hdlr {
                         handler: b"vide".into(),
-                        name: "VideoHandler".into()
+                        name: "VideoHandler".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         vmhd: Some(Vmhd {
@@ -387,7 +388,8 @@ fn hevc() {
                 meta: Some(Meta {
                     hdlr: Hdlr {
                         handler: FourCC::new(b"mdir"),
-                        name: "".into()
+                        name: "".into(),
+                        component_type: None,
                     },
                     items: vec![Ilst {
                         name: None,

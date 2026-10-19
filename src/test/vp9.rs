@@ -50,7 +50,8 @@ fn vp9() {
             meta: Some(Meta {
                 hdlr: Hdlr {
                     handler: FourCC::new(b"ID32"),
-                    name: "".into()
+                    name: "".into(),
+                    component_type: None,
                 },
                 items: vec![Any::Unknown(
                     FourCC::new(b"ID32"),
@@ -111,7 +112,8 @@ fn vp9() {
                     },
                     hdlr: Hdlr {
                         handler: b"vide".into(),
-                        name: "VideoHandler".to_string()
+                        name: "VideoHandler".to_string(),
+                        component_type: None,
                     },
                     minf: Minf {
                         vmhd: Some(Vmhd {

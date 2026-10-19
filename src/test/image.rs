@@ -23,7 +23,8 @@ fn heif() {
         Meta {
             hdlr: Hdlr {
                 handler: b"pict".into(),
-                name: "".into()
+                name: "".into(),
+                component_type: None,
             },
             items: vec![
                 Pitm { item_id: 1 }.into(),
@@ -307,7 +308,8 @@ fn avif() {
         Meta {
             hdlr: Hdlr {
                 handler: b"pict".into(),
-                name: "".into()
+                name: "".into(),
+                component_type: None,
             },
             items: vec![
                 Pitm { item_id: 1 }.into(),

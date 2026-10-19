@@ -61,6 +61,7 @@ fn esds() {
                     hdlr: Hdlr {
                         handler: b"vide".into(),
                         name: "(C) 2007 Google Inc. v08.13.2007.".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         vmhd: Vmhd {
@@ -147,6 +148,7 @@ fn esds() {
                     hdlr: Hdlr {
                         handler: b"soun".into(),
                         name: "(C) 2007 Google Inc. v08.13.2007.".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         smhd: Some(Smhd {

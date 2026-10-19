@@ -134,6 +134,7 @@ mod tests {
             hdlr: Hdlr {
                 handler: b"fake".into(),
                 name: "".into(),
+                component_type: None,
             },
             items: Vec::new(),
         };
@@ -153,6 +154,7 @@ mod tests {
             hdlr: Hdlr {
                 handler: b"mdir".into(),
                 name: "".into(),
+                component_type: None,
             },
             items: Vec::new(),
         };
@@ -173,6 +175,7 @@ mod tests {
             hdlr: Hdlr {
                 handler: b"mdir".into(),
                 name: "".into(),
+                component_type: None,
             },
             items: Vec::new(),
         };
@@ -293,6 +296,7 @@ mod tests {
         let hdlr = Hdlr {
             handler: b"mdir".into(),
             name: "Apple".into(),
+            component_type: None,
         };
 
         // Encode hdlr
@@ -336,6 +340,7 @@ mod tests {
         let hdlr = Hdlr {
             handler: b"mdir".into(),
             name: "".into(),
+            component_type: None,
         };
         let mut hdlr_buf = Vec::new();
         hdlr.encode(&mut hdlr_buf).unwrap();
@@ -377,6 +382,7 @@ mod tests {
             hdlr: Hdlr {
                 handler: b"mdir".into(),
                 name: "Handler".into(),
+                component_type: None,
             },
             items: vec![],
         };

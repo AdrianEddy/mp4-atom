@@ -30,7 +30,8 @@ fn av1_anim() {
         Meta {
             hdlr: Hdlr {
                 handler: b"pict".into(),
-                name: "".into()
+                name: "".into(),
+                component_type: None,
             },
             items: vec![
                 Pitm { item_id: 1 }.into(),
@@ -196,7 +197,8 @@ fn av1_anim() {
                     },
                     hdlr: Hdlr {
                         handler: b"pict".into(),
-                        name: "".into()
+                        name: "".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         vmhd: Some(Vmhd {

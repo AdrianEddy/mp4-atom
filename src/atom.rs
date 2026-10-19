@@ -164,7 +164,20 @@ nested! {
 */
 
 macro_rules! nested {
+    // Children are encoded in the order given: required, then optional, then
+    // multiple.
     (required: [$($required:ident),*$(,)?], optional: [$($optional:ident),*$(,)?], multiple: [$($multiple:ident),*$(,)?],) => {
+        nested! {
+            required: [$($required),*],
+            optional: [$($optional),*],
+            multiple: [$($multiple),*],
+            order: [$($required,)* $($optional,)* $($multiple,)*],
+        }
+    };
+    // `order` names every child once, in the order they are encoded — for a
+    // container whose readers expect its children in a set order (QuickTime's
+    // `trak`, `minf`). Decoding accepts any order either way.
+    (required: [$($required:ident),*$(,)?], optional: [$($optional:ident),*$(,)?], multiple: [$($multiple:ident),*$(,)?], order: [$($order:ident),*$(,)?],) => {
         pastey::paste! {
             fn decode_body<B: Buf>(buf: &mut B) -> Result<Self> {
                 $( let mut [<$required:lower>] = None;)*
@@ -205,9 +218,9 @@ macro_rules! nested {
             }
 
             fn encode_body<B: BufMut>(&self, buf: &mut B) -> Result<()> {
-                $( self.[<$required:lower>].encode(buf)?; )*
-                $( self.[<$optional:lower>].encode(buf)?; )*
-                $( self.[<$multiple:lower>].iter().map(|x| x.encode(buf)).collect::<Result<()>>()?; )*
+                // A required child encodes as itself, an optional one when
+                // present, a multiple one as each of its entries in turn.
+                $( self.[<$order:lower>].encode(buf)?; )*
 
                 Ok(())
             }

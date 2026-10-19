@@ -28,6 +28,9 @@ pub struct Minf {
     pub hmhd: Option<Hmhd>,
     /// QuickTime base media information header — a timecode / text track's.
     pub gmhd: Option<Gmhd>,
+    /// QuickTime's data handler reference (`hdlr` with component type `dhlr`),
+    /// which QuickTime writers put in `minf`. ISO files have none.
+    pub hdlr: Option<Hdlr>,
     pub dinf: Dinf,
     pub stbl: Stbl,
 }
@@ -35,9 +38,13 @@ pub struct Minf {
 impl Atom for Minf {
     const KIND: FourCC = FourCC::new(b"minf");
 
+    // The media header first, then QuickTime's data handler, `dinf` and
+    // `stbl` — the order QuickTime readers expect (QTFF) and ISO/IEC 14496-12
+    // lists.
     nested! {
         required: [ Dinf, Stbl ],
-        optional: [ Vmhd, Smhd, Nmhd, Sthd, Hmhd, Gmhd ],
+        optional: [ Vmhd, Smhd, Nmhd, Sthd, Hmhd, Gmhd, Hdlr ],
         multiple: [],
+        order: [ Vmhd, Smhd, Nmhd, Sthd, Hmhd, Gmhd, Hdlr, Dinf, Stbl ],
     }
 }

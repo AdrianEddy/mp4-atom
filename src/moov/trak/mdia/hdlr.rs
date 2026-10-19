@@ -5,6 +5,21 @@ use crate::*;
 pub struct Hdlr {
     pub handler: FourCC,
     pub name: String,
+    /// QuickTime's component type — `mhlr` for a media handler (in `mdia`),
+    /// `dhlr` for a data handler (in `minf`) — in the field ISO/IEC 14496-12
+    /// reserves as `pre_defined`.
+    ///
+    /// `Some` writes QuickTime's layout (QTFF): this type, and the name as a
+    /// Pascal string. `None` writes ISO's: zero, and a NUL-terminated name. A
+    /// decoded box reports what it was written as, and its name either way.
+    pub component_type: Option<FourCC>,
+}
+
+impl Hdlr {
+    /// QuickTime's media handler component type.
+    pub const MEDIA_HANDLER: FourCC = FourCC::new(b"mhlr");
+    /// QuickTime's data handler component type.
+    pub const DATA_HANDLER: FourCC = FourCC::new(b"dhlr");
 }
 
 impl Default for Hdlr {
@@ -12,6 +27,7 @@ impl Default for Hdlr {
         Hdlr {
             handler: FourCC::new(b"none"),
             name: String::new(),
+            component_type: None,
         }
     }
 }
@@ -21,12 +37,29 @@ impl AtomExt for Hdlr {
     const KIND_EXT: FourCC = FourCC::new(b"hdlr");
 
     fn decode_body_ext<B: Buf>(buf: &mut B, _ext: ()) -> Result<Self> {
-        u32::decode(buf)?; // pre-defined
+        let pre_defined = u32::decode(buf)?;
+        let component_type = (pre_defined != 0).then(|| FourCC::from(pre_defined));
         let handler = FourCC::decode(buf)?;
 
         <[u8; 12]>::decode(buf)?; // reserved
 
-        let name = String::decode(buf)?;
+        // A QuickTime name is a Pascal string: a length byte, that many bytes,
+        // and at most NUL padding after. QuickTime writers also put C strings
+        // here, so anything else reads as one.
+        let rest = buf.slice(buf.remaining());
+        let pascal = component_type.is_some()
+            && rest.first().is_some_and(|&n| {
+                let end = 1 + n as usize;
+                end <= rest.len() && rest[end..].iter().all(|&b| b == 0)
+            });
+        let name = if pascal {
+            let n = rest[0] as usize;
+            let name = String::from_utf8_lossy(&rest[1..1 + n]).into_owned();
+            buf.advance(1 + n);
+            name
+        } else {
+            String::decode(buf)?
+        };
 
         // Skip any trailing padding
         if buf.has_remaining() {
@@ -34,17 +67,29 @@ impl AtomExt for Hdlr {
             buf.advance(buf.remaining());
         }
 
-        Ok(Hdlr { handler, name })
+        Ok(Hdlr {
+            handler,
+            name,
+            component_type,
+        })
     }
 
     fn encode_body_ext<B: BufMut>(&self, buf: &mut B) -> Result<()> {
-        0u32.encode(buf)?; // pre-defined
+        // pre-defined (ISO) / component type (QuickTime)
+        self.component_type.map_or(0, u32::from).encode(buf)?;
         self.handler.encode(buf)?;
 
-        // 12 bytes reserved
+        // 12 bytes reserved (QuickTime: manufacturer, flags, flags mask)
         [0u8; 12].encode(buf)?;
 
-        self.name.as_str().encode(buf)?;
+        if self.component_type.is_some() {
+            let name = self.name.as_bytes();
+            let n = name.len().min(255);
+            (n as u8).encode(buf)?;
+            buf.append_slice(&name[..n]);
+        } else {
+            self.name.as_str().encode(buf)?;
+        }
 
         Ok(())
     }
@@ -59,6 +104,7 @@ mod tests {
         let expected = Hdlr {
             handler: FourCC::new(b"vide"),
             name: String::from("VideoHandler"),
+            component_type: None,
         };
         let mut buf = Vec::new();
         expected.encode(&mut buf).unwrap();
@@ -68,11 +114,42 @@ mod tests {
         assert_eq!(decoded, expected);
     }
 
+    /// QuickTime's media handler, byte for byte as FFmpeg's `movenc` writes it
+    /// into a MOV.
+    #[test]
+    fn test_hdlr_quicktime() {
+        let expected = Hdlr {
+            handler: FourCC::new(b"vide"),
+            name: String::from("VideoHandler"),
+            component_type: Some(Hdlr::MEDIA_HANDLER),
+        };
+        let mut buf = Vec::new();
+        expected.encode(&mut buf).unwrap();
+        let mut movenc = vec![0, 0, 0, 45];
+        movenc.extend_from_slice(b"hdlr");
+        movenc.extend_from_slice(&[0; 4]);
+        movenc.extend_from_slice(b"mhlrvide");
+        movenc.extend_from_slice(&[0; 12]);
+        movenc.push(12);
+        movenc.extend_from_slice(b"VideoHandler");
+        assert_eq!(buf, movenc);
+        assert_eq!(Hdlr::decode(&mut buf.as_slice()).unwrap(), expected);
+        // A QuickTime writer's C-string name reads as one.
+        let mut cstr = buf[..32].to_vec();
+        cstr.extend_from_slice(b"VideoHandler\0");
+        cstr[3] = cstr.len() as u8;
+        assert_eq!(
+            Hdlr::decode(&mut cstr.as_slice()).unwrap().name,
+            "VideoHandler"
+        );
+    }
+
     #[test]
     fn test_hdlr_empty() {
         let expected = Hdlr {
             handler: FourCC::new(b"vide"),
             name: String::new(),
+            component_type: None,
         };
         let mut buf = Vec::new();
         expected.encode(&mut buf).unwrap();
@@ -177,6 +254,7 @@ mod tests {
         let original = Hdlr {
             handler: FourCC::new(b"meta"),
             name: "MetaHandler".to_string(),
+            component_type: None,
         };
 
         // Encode (should not have trailing bytes)

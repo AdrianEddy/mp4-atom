@@ -139,6 +139,7 @@ mod tests {
                 hdlr: Hdlr {
                     handler: FourCC::new(b"fake"),
                     name: "".into(),
+                    component_type: None,
                 },
                 items: vec![],
             }),
@@ -328,6 +329,7 @@ mod tests {
             hdlr: Hdlr {
                 handler: FourCC::new(b"fake"),
                 name: "".into(),
+                component_type: None,
             },
             items: vec![],
         };

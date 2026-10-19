@@ -97,6 +97,7 @@ fn avcc_ext() {
                     hdlr: Hdlr {
                         handler: b"vide".into(),
                         name: "L-SMASH Video Handler".to_string(),
+                        component_type: None,
                     },
                     minf: Minf {
                         vmhd: Some(Vmhd {
@@ -223,6 +224,7 @@ fn avcc_ext() {
                     hdlr: Hdlr {
                         handler: b"soun".into(),
                         name: "L-SMASH Audio Handler".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         smhd: Some(Smhd::default()),

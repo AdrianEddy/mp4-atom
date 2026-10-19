@@ -88,6 +88,7 @@ fn flac() {
                     hdlr: Hdlr {
                         handler: b"soun".into(),
                         name: "SoundHandler".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         smhd: Some(Smhd { balance: 0.into() }),

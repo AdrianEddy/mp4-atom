@@ -26,10 +26,13 @@ pub struct Moov {
 impl Atom for Moov {
     const KIND: FourCC = FourCC::new(b"moov");
 
+    // `mvhd` first and the tracks before `mvex` / `udta`, as QuickTime and
+    // ISO/IEC 14496-12 order them.
     nested! {
         required: [ Mvhd ],
         optional: [ Ainf, Meta, Mvex, Udta ],
         multiple: [ Trak ],
+        order: [ Mvhd, Meta, Trak, Mvex, Udta, Ainf ],
     }
 }
 
@@ -132,7 +135,8 @@ mod test {
                 meta: Some(Meta {
                     hdlr: Hdlr {
                         handler: FourCC::new(b"ID32"),
-                        name: "".into()
+                        name: "".into(),
+                        component_type: None,
                     },
                     items: vec![Any::Unknown(
                         FourCC::new(b"ID32"),
@@ -188,6 +192,7 @@ mod test {
                         hdlr: Hdlr {
                             handler: b"vide".into(),
                             name: "VideoHandler".to_string(),
+                            component_type: None,
                         },
                         minf: Minf {
                             vmhd: Some(Vmhd {

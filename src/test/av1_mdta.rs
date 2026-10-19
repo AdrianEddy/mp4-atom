@@ -98,7 +98,8 @@ fn av1_mdta() {
                     },
                     hdlr: Hdlr {
                         handler: b"vide".into(),
-                        name: "obu@GPAC2.1-DEV-rev199-g8e29f6e8b-github_master".into()
+                        name: "obu@GPAC2.1-DEV-rev199-g8e29f6e8b-github_master".into(),
+                        component_type: None,
                     },
                     minf: Minf {
                         vmhd: Some(Vmhd {
@@ -196,7 +197,8 @@ fn av1_mdta() {
                 meta: Some(Meta {
                     hdlr: Hdlr {
                         handler: FourCC::new(b"mdta"),
-                        name: "".into()
+                        name: "".into(),
+                        component_type: None,
                     },
                     items: vec![
                         Keys {
