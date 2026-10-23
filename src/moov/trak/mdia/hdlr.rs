@@ -45,7 +45,9 @@ impl AtomExt for Hdlr {
 
         // A QuickTime name is a Pascal string: a length byte, that many bytes,
         // and at most NUL padding after. QuickTime writers also put C strings
-        // here, so anything else reads as one.
+        // here, so anything else reads as one. Either way the name ends at its
+        // first NUL: some writers count their NUL padding into the Pascal
+        // length.
         let rest = buf.slice(buf.remaining());
         let pascal = component_type.is_some()
             && rest.first().is_some_and(|&n| {
@@ -54,7 +56,9 @@ impl AtomExt for Hdlr {
             });
         let name = if pascal {
             let n = rest[0] as usize;
-            let name = String::from_utf8_lossy(&rest[1..1 + n]).into_owned();
+            let bytes = &rest[1..1 + n];
+            let len = bytes.iter().position(|&b| b == 0).unwrap_or(n);
+            let name = String::from_utf8_lossy(&bytes[..len]).into_owned();
             buf.advance(1 + n);
             name
         } else {
@@ -142,6 +146,23 @@ mod tests {
             Hdlr::decode(&mut cstr.as_slice()).unwrap().name,
             "VideoHandler"
         );
+    }
+
+    /// A QuickTime media handler whose Pascal name length counts its NUL
+    /// padding. The name ends at the first NUL.
+    #[test]
+    fn test_hdlr_quicktime_padded_name() {
+        let mut padded = vec![0, 0, 0, 54];
+        padded.extend_from_slice(b"hdlr");
+        padded.extend_from_slice(&[0; 4]);
+        padded.extend_from_slice(b"mhlrvide");
+        padded.extend_from_slice(&[0; 12]);
+        padded.push(21);
+        padded.extend_from_slice(b"VideoHandler");
+        padded.extend_from_slice(&[0; 9]);
+        let decoded = Hdlr::decode(&mut padded.as_slice()).unwrap();
+        assert_eq!(decoded.name, "VideoHandler");
+        assert_eq!(decoded.component_type, Some(Hdlr::MEDIA_HANDLER));
     }
 
     #[test]
