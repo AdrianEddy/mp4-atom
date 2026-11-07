@@ -39,10 +39,9 @@ impl<T: Atom> DecodeMaybe for T {
             None => return Ok(None),
         };
 
-        let size = header.size.unwrap_or(peek.remaining());
-        if size > peek.remaining() {
+        let Some(size) = header.size_within(peek.remaining()) else {
             return Ok(None);
-        }
+        };
 
         buf.advance(remaining - peek.remaining());
         let body = &mut buf.slice(size);
@@ -119,10 +118,9 @@ impl<T: Atom> DecodeAtom for T {
             return Err(Error::UnexpectedBox(header.kind));
         }
 
-        let size = header.size.unwrap_or(buf.remaining());
-        if size > buf.remaining() {
+        let Some(size) = header.size_within(buf.remaining()) else {
             return Err(Error::OutOfBounds);
-        }
+        };
 
         let body = &mut buf.slice(size);
 

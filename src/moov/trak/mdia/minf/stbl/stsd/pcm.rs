@@ -116,10 +116,9 @@ impl Pcm {
                 None => break,
             };
 
-            let size = header.size.unwrap_or(buf.remaining());
-            if size > buf.remaining() {
+            let Some(size) = header.size_within(buf.remaining()) else {
                 break;
-            }
+            };
 
             let mut limited = buf.slice(size);
 

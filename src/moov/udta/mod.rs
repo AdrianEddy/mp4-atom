@@ -1,14 +1,20 @@
 mod chpl;
 mod cprt;
 mod kind;
+mod loci;
 mod rtng;
 mod skip;
+mod text;
+mod xmp;
 
 pub use chpl::*;
 pub use cprt::*;
 pub use kind::*;
+pub use loci::*;
 pub use rtng::*;
 pub use skip::*;
+pub use text::*;
+pub use xmp::*;
 
 use crate::*;
 
@@ -25,6 +31,13 @@ pub struct Udta {
     pub meta: Option<Meta>,
     /// Zero or more, one per language (3GPP TS 26.244 clause 8).
     pub rtng: Vec<Rtng>,
+    /// QuickTime user-data text items (`©xyz`, `©mak`, `©mod`, `©swr`, `name`,
+    /// `manu`, `modl`, …), in file order.
+    pub text: Vec<UdtaText>,
+    /// Zero or more, one per language (3GPP TS 26.244 clause 8).
+    pub loci: Vec<Loci>,
+    /// Zero or one (Adobe XMP Specification Part 3, "QuickTime").
+    pub xmp: Option<Xmp>,
 }
 
 impl Atom for Udta {
@@ -36,6 +49,9 @@ impl Atom for Udta {
         let mut kind = Vec::new();
         let mut meta = None;
         let mut rtng = Vec::new();
+        let mut text = Vec::new();
+        let mut loci = Vec::new();
+        let mut xmp = None;
 
         // `udta` is a free-form user-data container. QuickTime writes a
         // track-name `name` box here, whose fourcc collides with the iTunes
@@ -44,18 +60,21 @@ impl Atom for Udta {
         // `Ilst::decode_body` — rather than through `Any`. Unknown children go
         // to `decode_unknown` (a warning by default, an error under strict).
         while let Some(header) = Header::decode_maybe(buf)? {
-            let size = header.size.unwrap_or(buf.remaining());
-            if size > buf.remaining() {
+            let Some(size) = header.size_within(buf.remaining()) else {
                 // A child whose declared size exceeds what remains is truncated.
                 return Err(Error::OutOfBounds);
-            }
+            };
             // Multiplicity follows the specs: `cprt` and `kind` are "zero or
             // more" (ISO/IEC 14496-12 §8.10.2 — one copyright notice per
             // language — and §8.10.4 — one box per role value), and 3GPP
             // TS 26.244 clause 8 admits each asset box (`rtng` included) once
             // per language, so repeats accumulate. `meta` is "zero or one" per
             // container (ISO/IEC 14496-12 §8.11.1), so a second one is
-            // malformed.
+            // malformed. So is a second `XMP_` (one XMP packet per file), but
+            // unlike a second `meta` it is skipped, the first kept, as a
+            // malformed `loci` is (`skip_malformed`). QuickTime keeps any
+            // number of text items, one per type and language as a rule, in
+            // file order.
             match header.kind {
                 Chpl::KIND => {
                     if chpl.is_some() {
@@ -72,6 +91,18 @@ impl Atom for Udta {
                     meta = Some(Meta::decode_atom(&header, buf)?);
                 }
                 Rtng::KIND => rtng.push(Rtng::decode_atom(&header, buf)?),
+                Loci::KIND => match Loci::decode_atom(&header, buf) {
+                    Ok(atom) => loci.push(atom),
+                    Err(err) => skip_malformed(Loci::KIND, size, buf, err)?,
+                },
+                Xmp::KIND if xmp.is_some() => {
+                    skip_malformed(Xmp::KIND, size, buf, Error::DuplicateBox(Xmp::KIND))?
+                }
+                Xmp::KIND => xmp = Some(Xmp::decode_atom(&header, buf)?),
+                kind if UdtaText::is_text_kind(kind) => {
+                    text.push(UdtaText::decode_body(kind, &mut buf.slice(size)));
+                    buf.advance(size);
+                }
                 // `free`/`skip` are padding boxes; drop them.
                 Free::KIND | Skip::KIND => {
                     buf.advance(size);
@@ -92,6 +123,9 @@ impl Atom for Udta {
             kind,
             meta,
             rtng,
+            text,
+            loci,
+            xmp,
         })
     }
 
@@ -101,8 +135,25 @@ impl Atom for Udta {
         self.meta.encode(buf)?;
         self.kind.encode(buf)?;
         self.rtng.encode(buf)?;
+        self.text.encode(buf)?;
+        self.loci.encode(buf)?;
+        self.xmp.encode(buf)?;
         Ok(())
     }
+}
+
+/// Skip a `loci` that does not decode, or a second `XMP_`, as an unknown child
+/// is skipped: they were unknown children before this crate typed them, and one
+/// malformed tag must not make the movie unreadable. Under `strict` the error
+/// stands.
+fn skip_malformed<B: Buf>(kind: FourCC, size: usize, buf: &mut B, err: Error) -> Result<()> {
+    if cfg!(feature = "strict") || cfg!(test) {
+        tracing::error!(%kind, %err, "malformed udta child");
+        return Err(err);
+    }
+    tracing::warn!(%kind, %err, "malformed udta child skipped");
+    buf.advance(size);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -117,6 +168,9 @@ mod tests {
             meta: None,
             kind: vec![],
             rtng: vec![],
+            text: vec![],
+            loci: vec![],
+            xmp: None,
         };
 
         let mut buf = Vec::new();
@@ -153,6 +207,37 @@ mod tests {
                 language: "eng".into(),
                 rating_info: "test info".into(),
             }],
+            text: vec![
+                UdtaText {
+                    kind: FourCC::new(b"\xa9xyz"),
+                    strings: vec![UdtaString {
+                        language: 0x15c7,
+                        text: b"+27.9881+086.9250/".to_vec(),
+                    }],
+                    rest: vec![],
+                },
+                UdtaText {
+                    kind: FourCC::new(b"\xa9swr"),
+                    strings: vec![UdtaString {
+                        language: 0,
+                        text: b"Example 1.0".to_vec(),
+                    }],
+                    rest: vec![],
+                },
+            ],
+            loci: vec![Loci {
+                language: 0x15c7,
+                name: "Everest".into(),
+                role: 0,
+                longitude: 5696716,
+                latitude: 1834227,
+                altitude: 8848 << 16,
+                astronomical_body: "earth".into(),
+                additional_notes: "".into(),
+            }],
+            xmp: Some(Xmp {
+                data: b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>".to_vec(),
+            }),
         };
 
         let mut buf = Vec::new();
@@ -256,13 +341,50 @@ mod tests {
     fn test_udta_quicktime_name_not_misparsed() {
         // The udta-namespace dispatch must NOT route `name` to the global
         // `Any` table's ilst Name item (which would UnderDecode the 4-byte
-        // body). Under `cfg(test)` an unknown child is an error, proving the
-        // atom is treated as unknown-to-udta rather than misparsed as ilst.
-        let mut buf = std::io::Cursor::new(ENCODED_UDTA_WITH_QT_NAME);
-        match Udta::decode(&mut buf) {
-            Err(Error::UnexpectedBox(kind)) => assert_eq!(kind, FourCC::new(b"name")),
-            other => panic!("expected UnexpectedBox(name), got {other:?}"),
-        }
+        // body): it is a text item, here one empty string.
+        let udta = Udta::decode(&mut std::io::Cursor::new(ENCODED_UDTA_WITH_QT_NAME)).unwrap();
+        assert_eq!(
+            udta.text,
+            vec![UdtaText {
+                kind: FourCC::new(b"name"),
+                strings: vec![UdtaString {
+                    language: 0,
+                    text: vec![],
+                }],
+                rest: vec![],
+            }]
+        );
+
+        let mut encoded = Vec::new();
+        udta.encode(&mut encoded).unwrap();
+        assert_eq!(encoded, ENCODED_UDTA_WITH_QT_NAME);
+    }
+
+    // FFmpeg's track `udta` for `-metadata:s:v title=…`: a `name` whose body is
+    // the bare UTF-8 title, no length prefix.
+    #[test]
+    fn test_udta_bare_name() {
+        let bytes = [
+            &[0x00, 0x00, 0x00, 0x1c][..],
+            b"udta",
+            &[0x00, 0x00, 0x00, 0x14],
+            b"name",
+            b"Front camera",
+        ]
+        .concat();
+        let udta = Udta::decode(&mut bytes.as_slice()).unwrap();
+        assert_eq!(
+            udta.text,
+            vec![UdtaText {
+                kind: FourCC::new(b"name"),
+                strings: vec![],
+                rest: b"Front camera".to_vec(),
+            }]
+        );
+
+        let mut encoded = Vec::new();
+        udta.encode(&mut encoded).unwrap();
+        assert_eq!(encoded, bytes);
     }
 
     // Repeated `cprt`/`kind`/`rtng` children are spec-legal — ISO/IEC 14496-12
@@ -310,6 +432,37 @@ mod tests {
                     rating_info: "accord parental".into(),
                 },
             ],
+            text: vec![
+                UdtaText {
+                    kind: FourCC::new(b"\xa9cmt"),
+                    strings: vec![UdtaString {
+                        language: 0x15c7,
+                        text: b"first".to_vec(),
+                    }],
+                    rest: vec![],
+                },
+                UdtaText {
+                    kind: FourCC::new(b"\xa9cmt"),
+                    strings: vec![UdtaString {
+                        language: 0x15c7,
+                        text: b"second".to_vec(),
+                    }],
+                    rest: vec![],
+                },
+            ],
+            loci: vec![
+                Loci {
+                    language: 0x15c7,
+                    name: "Warsaw".into(),
+                    ..Default::default()
+                },
+                Loci {
+                    language: 0x41ec,
+                    name: "Warszawa".into(),
+                    ..Default::default()
+                },
+            ],
+            xmp: None,
         };
 
         let mut buf = Vec::new();
@@ -345,6 +498,85 @@ mod tests {
         match Udta::decode(&mut bytes.as_slice()) {
             Err(Error::DuplicateBox(kind)) => assert_eq!(kind, Meta::KIND),
             other => panic!("expected DuplicateBox(meta), got {other:?}"),
+        }
+    }
+
+    // FFmpeg's `udta` for a MOV with `-metadata date=… make=… model=…
+    // location=…`: four QuickTime text items, language `und`.
+    const ENCODED_UDTA_QUICKTIME_TEXT: &[u8] = &[
+        0x00, 0x00, 0x00, 0x68, 0x75, 0x64, 0x74, 0x61, 0x00, 0x00, 0x00, 0x16, 0xa9, 0x64, 0x61,
+        0x79, 0x00, 0x0a, 0x55, 0xc4, 0x32, 0x30, 0x32, 0x36, 0x2d, 0x31, 0x31, 0x2d, 0x30, 0x37,
+        0x00, 0x00, 0x00, 0x16, 0xa9, 0x6d, 0x61, 0x6b, 0x00, 0x0a, 0x55, 0xc4, 0x45, 0x78, 0x61,
+        0x6d, 0x70, 0x6c, 0x65, 0x43, 0x61, 0x6d, 0x00, 0x00, 0x00, 0x16, 0xa9, 0x6d, 0x6f, 0x64,
+        0x00, 0x0a, 0x55, 0xc4, 0x45, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x20, 0x58, 0x31, 0x00,
+        0x00, 0x00, 0x1e, 0xa9, 0x78, 0x79, 0x7a, 0x00, 0x12, 0x55, 0xc4, 0x2b, 0x32, 0x37, 0x2e,
+        0x39, 0x38, 0x38, 0x31, 0x2b, 0x30, 0x38, 0x36, 0x2e, 0x39, 0x32, 0x35, 0x30, 0x2f,
+    ];
+
+    #[test]
+    fn test_udta_quicktime_text() {
+        let udta = Udta::decode(&mut &ENCODED_UDTA_QUICKTIME_TEXT[..]).unwrap();
+        let item = |kind: &[u8; 4], text: &[u8]| UdtaText {
+            kind: FourCC::new(kind),
+            strings: vec![UdtaString {
+                language: 0x55c4,
+                text: text.to_vec(),
+            }],
+            rest: vec![],
+        };
+        assert_eq!(
+            udta,
+            Udta {
+                text: vec![
+                    item(b"\xa9day", b"2026-11-07"),
+                    item(b"\xa9mak", b"ExampleCam"),
+                    item(b"\xa9mod", b"Example X1"),
+                    item(b"\xa9xyz", b"+27.9881+086.9250/"),
+                ],
+                ..Default::default()
+            }
+        );
+
+        let mut encoded = Vec::new();
+        udta.encode(&mut encoded).unwrap();
+        assert_eq!(encoded, ENCODED_UDTA_QUICKTIME_TEXT);
+    }
+
+    // A text item whose string runs past it keeps its body as `rest`: the
+    // item and the rest of the `udta` read, and re-encode as they came.
+    #[test]
+    fn test_udta_malformed_text() {
+        let mut bytes = ENCODED_UDTA_QUICKTIME_TEXT.to_vec();
+        bytes[16..18].copy_from_slice(&0x0bu16.to_be_bytes()); // `©day` states 11 bytes, holds 10
+        let udta = Udta::decode(&mut bytes.as_slice()).unwrap();
+        assert_eq!(udta.text.len(), 4);
+        assert!(udta.text[0].strings.is_empty());
+        assert_eq!(udta.text[0].rest, &bytes[16..30]);
+
+        let mut encoded = Vec::new();
+        udta.encode(&mut encoded).unwrap();
+        assert_eq!(encoded, bytes);
+    }
+
+    // One XMP packet per file: a second `XMP_` is malformed (outside `strict`
+    // and tests it is skipped, the first kept).
+    #[test]
+    fn test_udta_duplicate_xmp() {
+        let xmp = Xmp {
+            data: b"<x:xmpmeta/>".to_vec(),
+        };
+        let mut body = Vec::new();
+        xmp.encode(&mut body).unwrap();
+        xmp.encode(&mut body).unwrap();
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
+        bytes.extend_from_slice(b"udta");
+        bytes.extend_from_slice(&body);
+
+        match Udta::decode(&mut bytes.as_slice()) {
+            Err(Error::DuplicateBox(kind)) => assert_eq!(kind, Xmp::KIND),
+            other => panic!("expected DuplicateBox(XMP_), got {other:?}"),
         }
     }
 }

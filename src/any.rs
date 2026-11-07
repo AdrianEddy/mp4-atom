@@ -46,8 +46,7 @@ macro_rules! any {
                     None => return Ok(None),
                 };
 
-                let size = header.size.unwrap_or(peek.remaining());
-                if size > peek.remaining() {
+                if header.size_within(peek.remaining()).is_none() {
                     return Ok(None);
                 }
 
@@ -76,10 +75,9 @@ macro_rules! any {
                 // through this function, so this is the only place it is needed.
                 let _depth = DepthGuard::enter(header.kind)?;
 
-                let size = header.size.unwrap_or(buf.remaining());
-                if size > buf.remaining() {
+                let Some(size) = header.size_within(buf.remaining()) else {
                     return Err(Error::OutOfBounds);
-                }
+                };
 
                 let mut body = &mut buf.slice(size);
 
@@ -269,6 +267,8 @@ any! {
         Udta,
             Cprt,
             Kind,
+            Loci,
+            Xmp,
             Skip,
         // Trak, // boxed to avoid large size differences between variants
             Tkhd,

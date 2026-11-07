@@ -245,31 +245,58 @@ pub struct IlstData {
 }
 
 impl IlstData {
+    /// An item's values, in order: its first, then each `data` atom after it.
+    /// A multi-valued tag (several artists or genres, as `mutagen` writes them)
+    /// is one item holding several `data` atoms. Whatever follows them that is
+    /// not a `data` atom ending inside the item ends the values, as in
+    /// libavformat's `mov_read_udta_string`.
+    pub(crate) fn decode_all<B: Buf>(buf: &mut B) -> Result<Vec<Self>> {
+        let mut values = vec![Self::decode(buf)?];
+        while buf.has_remaining() {
+            match u32::decode(buf).and_then(|len| Self::decode_data_atom(len, buf)) {
+                Ok(value) => values.push(value),
+                Err(_) => break,
+            }
+        }
+        Ok(values)
+    }
+
+    /// An item's first value.
     pub(crate) fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
-        let type_indicator_or_len = u32::decode(buf)?;
-
-        let type_indicator = match type_indicator_or_len {
+        match u32::decode(buf)? {
+            // Too short for a valid length, so probably
+            // UTF-8 text, FFmpeg short-style
             TYPE_INDICATOR_UTF8 => {
-                // Too short for a valid length, so probably
-                // UTF-8 text, FFmpeg short-style
-                type_indicator_or_len
+                let size = buf.remaining().checked_sub(4).ok_or(Error::OutOfBounds)?;
+                Self::decode_value(TYPE_INDICATOR_UTF8, size, buf)
             }
-            _ => {
-                // Maybe Atom follows on straight away.
-                // Try parsing as Quicktime data atom: GPAC style or FFmpeg long style
-                let fourcc = FourCC::decode(buf)?;
-                if fourcc != DATA_4CC {
-                    return Err(Error::UnexpectedBox(fourcc));
-                }
+            // Maybe Atom follows on straight away.
+            // Try parsing as Quicktime data atom: GPAC style or FFmpeg long style
+            len => Self::decode_data_atom(len, buf),
+        }
+    }
 
-                u32::decode(buf)?
-            }
-        };
+    /// A `data` atom of `len` bytes, its length field already read: its 16
+    /// bytes of header and its value, within what is left of the item.
+    fn decode_data_atom<B: Buf>(len: u32, buf: &mut B) -> Result<Self> {
+        let fourcc = FourCC::decode(buf)?;
+        if fourcc != DATA_4CC {
+            return Err(Error::UnexpectedBox(fourcc));
+        }
+        let size = (len as usize)
+            .checked_sub(16)
+            .filter(|size| size + 8 <= buf.remaining())
+            .ok_or(Error::InvalidSize)?;
+        let type_indicator = u32::decode(buf)?;
+        Self::decode_value(type_indicator, size, buf)
+    }
 
+    /// A value after its type indicator: its country and language, then
+    /// `size` bytes.
+    fn decode_value<B: Buf>(type_indicator: u32, size: usize, buf: &mut B) -> Result<Self> {
         let country_indicator = u16::decode(buf)?;
         let language_indicator = u16::decode(buf)?;
 
-        let size = buf.remaining();
         let value = IlstDataValue::from_raw(type_indicator, buf.slice(size));
         buf.advance(size);
 
@@ -307,6 +334,9 @@ pub(crate) struct DataText {
 
 pub(crate) fn decode_text<B: Buf>(buf: &mut B) -> Result<DataText> {
     let data = IlstData::decode(buf)?;
+    // What follows the value is not a second one: `Ilst` keeps an item that
+    // holds several in `items`.
+    buf.advance(buf.remaining());
     match data.value {
         IlstDataValue::Utf8(text) => Ok(DataText {
             country_indicator: data.country_indicator,
@@ -619,5 +649,46 @@ mod tests {
             decode_raw(23, &[1, 2, 3]),
             IlstDataValue::Unknown(23, vec![1, 2, 3])
         );
+    }
+
+    // A `data` atom stating `len` bytes, whatever it holds.
+    fn data_atom(type_indicator: u32, value: &[u8], len: u32) -> Vec<u8> {
+        let mut atom = len.to_be_bytes().to_vec();
+        atom.extend_from_slice(b"data");
+        atom.extend_from_slice(&type_indicator.to_be_bytes());
+        atom.extend_from_slice(&0u32.to_be_bytes()); // country + language
+        atom.extend_from_slice(value);
+        atom
+    }
+
+    // An item's values are its `data` atoms, each holding its 16-byte header
+    // and ending inside the item, as libavformat bounds them: a first atom out
+    // of bounds is no value, and what follows the last good one ends them.
+    #[test]
+    fn test_decode_all_bounds() {
+        let values = |body: Vec<u8>| IlstData::decode_all(&mut body.as_slice());
+        let a = data_atom(1, b"A", 17);
+        assert_eq!(
+            values([a.clone(), data_atom(21, &[6], 17)].concat()).unwrap(),
+            vec![
+                data_with(IlstDataValue::Utf8("A".into())),
+                data_with(IlstDataValue::BeSignedInt(6))
+            ]
+        );
+
+        // Stating more than the item holds, or less than its own header.
+        for first in [data_atom(1, b"A", 100), data_atom(1, b"AAAAAAAA", 12)] {
+            assert!(matches!(values(first), Err(Error::InvalidSize)));
+        }
+
+        // An atom out of bounds, a box that is not `data`, too few bytes for a
+        // header.
+        let free = [&8u32.to_be_bytes()[..], b"free"].concat();
+        for tail in [data_atom(1, b"B", 100), free, vec![0; 7]] {
+            assert_eq!(
+                values([a.clone(), tail].concat()).unwrap(),
+                vec![data_with(IlstDataValue::Utf8("A".into()))]
+            );
+        }
     }
 }

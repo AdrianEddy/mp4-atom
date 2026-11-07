@@ -31,11 +31,9 @@ impl AsyncReadFrom for Option<Header> {
                 // Read another 8 bytes
                 r.read_exact(&mut buf).await?;
                 let size = u64::from_be_bytes(buf);
-                let size = size.checked_sub(16).ok_or(Error::InvalidSize)?;
-
-                Some(size as usize)
+                Some(size.checked_sub(16).ok_or(Error::InvalidSize)?)
             }
-            _ => Some(size.checked_sub(8).ok_or(Error::InvalidSize)? as usize),
+            _ => Some(u64::from(size.checked_sub(8).ok_or(Error::InvalidSize)?)),
         };
 
         Ok(Some(Header { kind, size }))

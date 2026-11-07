@@ -26,10 +26,9 @@ impl TrackReferenceTypeBox {
 
     fn decode<B: Buf>(buf: &mut B) -> Result<TrackReferenceTypeBox> {
         let header = Header::decode(buf)?;
-        let size = header.size.unwrap_or(buf.remaining());
-        if size > buf.remaining() {
+        let Some(size) = header.size_within(buf.remaining()) else {
             return Err(Error::InvalidSize);
-        }
+        };
         let num_entries = size / 4; // since its all u32
         let mut track_ids = Vec::with_capacity(num_entries.min(16));
         for _ in 0..num_entries {

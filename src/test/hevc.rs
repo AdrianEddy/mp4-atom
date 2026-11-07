@@ -402,7 +402,8 @@ fn hevc() {
                             text: "Lavf61.7.100".into()
                         }),
                         cprt: None,
-                        mdta: vec![]
+                        mdta: vec![],
+                        items: vec![],
                     }
                     .into(),],
                 }),

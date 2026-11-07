@@ -236,45 +236,46 @@ fn av1_mdta() {
                             mdta: vec![
                                 (
                                     1,
-                                    IlstData {
+                                    vec![IlstData {
                                         country_indicator: 0,
                                         language_indicator: 0,
                                         value: IlstDataValue::Utf8("iso6".into())
-                                    }
+                                    }]
                                 ),
                                 (
                                     2,
-                                    IlstData {
+                                    vec![IlstData {
                                         country_indicator: 0,
                                         language_indicator: 0,
                                         value: IlstDataValue::Utf8("512".into())
-                                    }
+                                    }]
                                 ),
                                 (
                                     3,
-                                    IlstData {
+                                    vec![IlstData {
                                         country_indicator: 0,
                                         language_indicator: 0,
                                         value: IlstDataValue::Utf8("iso6cmfcav01mp41".into())
-                                    }
+                                    }]
                                 ),
                                 (
                                     4,
-                                    IlstData {
+                                    vec![IlstData {
                                         country_indicator: 0,
                                         language_indicator: 0,
                                         value: IlstDataValue::Utf8("some value".into())
-                                    }
+                                    }]
                                 ),
                                 (
                                     5,
-                                    IlstData {
+                                    vec![IlstData {
                                         country_indicator: 0,
                                         language_indicator: 0,
                                         value: IlstDataValue::Utf8("Lavf63.1.101".into())
-                                    }
+                                    }]
                                 )
-                            ]
+                            ],
+                            items: vec![],
                         }
                         .into(),
                     ],

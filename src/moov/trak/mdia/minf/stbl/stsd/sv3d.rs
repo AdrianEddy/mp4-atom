@@ -141,10 +141,9 @@ impl Atom for Proj {
                 // but only while nothing else names the projection. Beside one,
                 // it is an ordinary unexpected box, not a second projection.
                 _ if kind.is_none() && header.kind != Free::KIND && header.kind != Skip::KIND => {
-                    let size = header.size.unwrap_or(buf.remaining());
-                    if size > buf.remaining() {
+                    let Some(size) = header.size_within(buf.remaining()) else {
                         return Err(Error::OutOfBounds);
-                    }
+                    };
                     let data = buf.slice(size).to_vec();
                     buf.advance(size);
                     kind = Some(ProjKind::Unknown(header.kind, data));
@@ -181,7 +180,7 @@ impl Atom for Proj {
             Some(ProjKind::Unknown(kind, data)) => {
                 Header {
                     kind: *kind,
-                    size: Some(data.len()),
+                    size: Some(data.len() as u64),
                 }
                 .encode(buf)?;
                 buf.append_slice(data);

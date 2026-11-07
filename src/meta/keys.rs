@@ -31,10 +31,12 @@ impl AtomExt for Keys {
 
         for _ in 0..entry_count {
             let header = Header::decode(buf)?;
-            let size = header.size.ok_or(Error::InvalidSize)?;
-            if size > buf.remaining() {
-                return Err(Error::OutOfBounds);
+            if header.size.is_none() {
+                return Err(Error::InvalidSize);
             }
+            let Some(size) = header.size_within(buf.remaining()) else {
+                return Err(Error::OutOfBounds);
+            };
 
             let key_value = String::from_utf8(buf.slice(size).to_vec())
                 .map_err(|err| Error::InvalidString(err.to_string()))?;
@@ -55,7 +57,7 @@ impl AtomExt for Keys {
         for entry in &self.entries {
             let header = Header {
                 kind: entry.key_namespace,
-                size: Some(entry.key_value.len()),
+                size: Some(entry.key_value.len() as u64),
             };
             header.encode(buf)?;
             entry.key_value.as_bytes().encode(buf)?;

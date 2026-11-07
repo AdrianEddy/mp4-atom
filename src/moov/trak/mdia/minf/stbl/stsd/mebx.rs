@@ -198,10 +198,9 @@ impl MebxKey {
             // `local_key_id` 0xFFFFFFFF is reserved and must never appear.
             return Err(Error::Reserved);
         }
-        let size = header.size.unwrap_or(buf.remaining());
-        if size > buf.remaining() {
+        let Some(size) = header.size_within(buf.remaining()) else {
             return Ok(None);
-        }
+        };
 
         let mut body = buf.slice(size);
 
@@ -248,7 +247,9 @@ impl MebxKey {
 const KEYS_KIND: FourCC = FourCC::new(b"keys");
 
 fn decode_keys<B: Buf>(header: &Header, buf: &mut B) -> Result<Vec<MebxKey>> {
-    let size = header.size.unwrap_or(buf.remaining());
+    let size = header
+        .size_within(buf.remaining())
+        .ok_or(Error::OutOfBounds)?;
     let mut body = buf.slice(size);
 
     let mut keys = Vec::new();
@@ -295,8 +296,7 @@ impl Atom for Mebx {
         let mut keys = None;
         let mut btrt = None;
         while let Some(header) = Header::decode_maybe(buf)? {
-            let size = header.size.unwrap_or(buf.remaining());
-            if size > buf.remaining() {
+            if header.size_within(buf.remaining()).is_none() {
                 break;
             }
             if header.kind == KEYS_KIND {

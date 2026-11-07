@@ -52,9 +52,9 @@ pub(super) const WAVE: FourCC = FourCC::new(b"wave");
 /// `frma` format box, the terminator) is skipped by size, not typed-decoded.
 pub(super) fn wave_child<T: Atom>(mut wave: &[u8]) -> Result<Option<T>> {
     while let Some(header) = Header::decode_maybe(&mut wave)? {
-        let size = match header.size {
-            Some(size) if size <= wave.remaining() => size,
-            _ => break,
+        // A size-to-end (`None`) or over-long child ends the scan.
+        let Some(size) = header.size.and(header.size_within(wave.remaining())) else {
+            break;
         };
         if header.kind == T::KIND {
             return Ok(Some(T::decode_body(&mut wave.slice(size))?));

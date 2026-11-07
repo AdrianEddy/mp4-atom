@@ -21,10 +21,9 @@ impl EvteSample {
         let mut emeb = None;
 
         while let Some(header) = Header::decode_maybe(buf)? {
-            let size = header.size.unwrap_or(buf.remaining());
-            if size > buf.remaining() {
+            let Some(size) = header.size_within(buf.remaining()) else {
                 return Err(Error::OutOfBounds);
-            }
+            };
             let mut body = buf.slice(size);
 
             match header.kind {
@@ -145,7 +144,7 @@ mod tests {
 
         let header = Header {
             kind: Emeb::KIND,
-            size: Some(size_of::<u32>()),
+            size: Some(size_of::<u32>() as u64),
         };
         header.encode(&mut buf).unwrap();
         0u32.encode(&mut buf).unwrap(); // invalid `emeb` body

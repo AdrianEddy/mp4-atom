@@ -170,6 +170,7 @@ fn bbb() {
                                         sample_size: 16,
                                         sample_rate: 44100.into(),
                                     },
+                                    sound_v2: None,
                                     esds: Esds {
                                         es_desc: esds::EsDescriptor {
                                             es_id: 2,
@@ -214,7 +215,7 @@ fn bbb() {
             udta: Some(Udta {
                 meta: Some(Meta {
                     hdlr: Hdlr { handler: FourCC::new(b"mdir"), name: "".into(), component_type: None },
-                    items: vec![Ilst { name: None, year: None, covr: None, desc: None, ctoo: Some(Tool { country_indicator: 0, language_indicator: 0, text: "Lavf61.1.100".into()}), cprt: None, mdta: vec![] }.into(),],
+                    items: vec![Ilst { name: None, year: None, covr: None, desc: None, ctoo: Some(Tool { country_indicator: 0, language_indicator: 0, text: "Lavf61.1.100".into()}), cprt: None, mdta: vec![], items: vec![] }.into(),],
                 }),
                 ..Default::default()
             }),

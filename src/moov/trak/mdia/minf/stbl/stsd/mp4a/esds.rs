@@ -314,40 +314,31 @@ fn parse_audio_specific_config(raw: &[u8]) -> (u8, u8, u8) {
     if raw.len() < 2 {
         return (0, 0, 0);
     }
-    let byte_a = raw[0];
-    let byte_b = raw[1];
+    // The `n` bits at bit offset `pos`, most significant first; `None` past
+    // the end of the payload.
+    let bits = |pos: usize, n: usize| -> Option<u8> {
+        if pos + n > raw.len() * 8 {
+            return None;
+        }
+        Some((pos..pos + n).fold(0, |v, i| (v << 1) | ((raw[i / 8] >> (7 - i % 8)) & 1)))
+    };
 
-    let mut profile = byte_a >> 3;
+    // Two bytes always hold the object type and the frequency index: 5 + 4
+    // bits, or 11 + 4 after the object type's escape.
+    let mut pos = 5;
+    let mut profile = bits(0, 5).unwrap_or_default();
     if profile == 31 {
-        // Escape: 6-bit audioObjectTypeExt = byte_a[2:0] << 3 | byte_b[7:5].
-        profile = 32 + (((byte_a & 7) << 3) | (byte_b >> 5));
+        // Escape: the real object type is 32 + the 6-bit audioObjectTypeExt.
+        profile = 32 + bits(5, 6).unwrap_or_default();
+        pos = 11;
     }
-
-    let freq_index = if profile > 31 {
-        (byte_b >> 1) & 0x0F
-    } else {
-        ((byte_a & 0x07) << 1) + (byte_b >> 7)
-    };
-
-    let chan_conf = if freq_index == 15 {
+    let freq_index = bits(pos, 4).unwrap_or_default();
+    pos += 4;
+    if freq_index == 15 {
         // The 24-bit explicit sample rate precedes the channel config.
-        if raw.len() >= 5 {
-            let sample_rate =
-                (u32::from(raw[2]) << 16) | (u32::from(raw[3]) << 8) | u32::from(raw[4]);
-            ((sample_rate >> 4) & 0x0F) as u8
-        } else {
-            0
-        }
-    } else if profile > 31 {
-        if raw.len() >= 3 {
-            // 4-bit channelConfiguration = byte_b[0] << 3 | raw[2][7:5].
-            ((byte_b & 1) << 3) | (raw[2] >> 5)
-        } else {
-            0
-        }
-    } else {
-        (byte_b >> 3) & 0x0F
-    };
+        pos += 24;
+    }
+    let chan_conf = bits(pos, 4).unwrap_or(0);
 
     (profile, freq_index, chan_conf)
 }
@@ -526,6 +517,24 @@ mod tests {
             Descriptor::decode(&mut cur).unwrap(),
             Descriptor::Unknown(0x7F, body)
         );
+    }
+
+    // The 0x0F frequency index is followed by the 24-bit explicit rate, and the
+    // channelConfiguration by it: bits 33–36 (AOT 2, 50000 Hz, channelConfig
+    // 2), and bits 39–42 after the object type's escape too (AOT 42, 44056 Hz,
+    // channelConfig 6).
+    #[test]
+    fn test_asc_explicit_rate_bit_packing() {
+        assert_eq!(
+            parse_audio_specific_config(&[0x17, 0x80, 0x61, 0xa8, 0x10]),
+            (2, 15, 2)
+        );
+        assert_eq!(
+            parse_audio_specific_config(&[0xf9, 0x5e, 0x01, 0x58, 0x30, 0xc0]),
+            (42, 15, 6)
+        );
+        // A payload cut inside the rate states no channel configuration.
+        assert_eq!(parse_audio_specific_config(&[0x17, 0x80, 0x61]), (2, 15, 0));
     }
 
     // AudioSpecificConfig with the 5-bit audioObjectType == 31 escape. The real

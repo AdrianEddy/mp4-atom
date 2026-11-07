@@ -8,6 +8,11 @@ pub use esds::Esds;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Mp4a {
     pub audio: Audio,
+    /// QuickTime version-2 sound sample description fields, when the entry was
+    /// written as a v2 `AudioSampleEntry`: the real rate and channel count of a
+    /// track the base [`Audio`] fields cannot state (a rate above 65535 Hz), which
+    /// then hold placeholders — see [`SoundV2`].
+    pub sound_v2: Option<SoundV2>,
     pub esds: Esds,
     pub btrt: Option<Btrt>,
     pub taic: Option<Taic>,
@@ -17,7 +22,7 @@ impl Atom for Mp4a {
     const KIND: FourCC = FourCC::new(b"mp4a");
 
     fn decode_body<B: Buf>(buf: &mut B) -> Result<Self> {
-        let audio = Audio::decode(buf)?;
+        let (audio, sound_v2) = Audio::decode_with_v2(buf)?;
 
         let mut btrt = None;
         let mut esds = None;
@@ -41,6 +46,7 @@ impl Atom for Mp4a {
 
         Ok(Mp4a {
             audio,
+            sound_v2,
             esds: esds.ok_or(Error::MissingBox(Esds::KIND))?,
             btrt,
             taic,
@@ -48,7 +54,7 @@ impl Atom for Mp4a {
     }
 
     fn encode_body<B: BufMut>(&self, buf: &mut B) -> Result<()> {
-        self.audio.encode(buf)?;
+        self.audio.encode_with_v2(self.sound_v2.as_ref(), buf)?;
         self.esds.encode(buf)?;
         self.btrt.encode(buf)?;
         self.taic.encode(buf)?;
@@ -70,9 +76,8 @@ fn decode_wave(mut wave: &[u8], esds: &mut Option<Esds>, btrt: &mut Option<Btrt>
     while let Some(header) = Header::decode_maybe(&mut wave)? {
         // A size-to-end (`None`) or over-long child terminates the scan — the
         // esds, if present, precedes any such terminator.
-        let size = match header.size {
-            Some(size) if size <= wave.remaining() => size,
-            _ => break,
+        let Some(size) = header.size.and(header.size_within(wave.remaining())) else {
+            break;
         };
         let mut child = wave.slice(size);
         if header.kind == Esds::KIND {
@@ -98,6 +103,7 @@ mod tests {
                 sample_size: 16,
                 sample_rate: 48000.into(),
             },
+            sound_v2: None,
             esds: Esds {
                 es_desc: esds::EsDescriptor {
                     es_id: 2,
@@ -210,6 +216,98 @@ mod tests {
         assert_eq!(decoded.btrt, Some(btrt));
     }
 
+    // FFmpeg's AAC-LC `esds` for a 96 kHz mono track (`freq_index` 0).
+    fn esds_96k_mono() -> Esds {
+        Esds {
+            es_desc: esds::EsDescriptor {
+                es_id: 1,
+                dec_config: esds::DecoderConfig {
+                    object_type_indication: 0x40,
+                    stream_type: 0x05,
+                    up_stream: 0,
+                    buffer_size_db: Default::default(),
+                    max_bitrate: 68963,
+                    avg_bitrate: 68963,
+                    dec_specific: Some(esds::DecoderSpecific {
+                        profile: 2,
+                        freq_index: 0,
+                        chan_conf: 1,
+                        raw: vec![0x10, 0x08],
+                    }),
+                },
+                sl_config: esds::SLConfig::default(),
+            },
+        }
+    }
+
+    // The QuickTime version-2 sound description FFmpeg writes for AAC in a MOV
+    // above 65535 Hz: the base fields hold QTFF's placeholders (three channels,
+    // a rate of 1.0) and the real rate and channel count live in the v2 fields.
+    fn audio_v2_placeholders() -> (Audio, SoundV2) {
+        (
+            Audio {
+                data_reference_index: 1,
+                channel_count: 3,
+                sample_size: 16,
+                sample_rate: FixedPoint::new(1, 0),
+            },
+            SoundV2 {
+                sample_rate: 96000,
+                channel_count: 1,
+                bits_per_channel: 0,
+                format_flags: 0,
+                bytes_per_packet: 0,
+                lpcm_frames_per_packet: 0,
+            },
+        )
+    }
+
+    // A version-2 entry keeps its v2 fields through a decode → encode → decode
+    // round trip; it decoded as the placeholders before.
+    #[test]
+    fn test_mp4a_sound_v2() {
+        let (audio, sound_v2) = audio_v2_placeholders();
+        let expected = Mp4a {
+            audio,
+            sound_v2: Some(sound_v2),
+            esds: esds_96k_mono(),
+            btrt: None,
+            taic: None,
+        };
+        let mut buf = Vec::new();
+        expected.encode(&mut buf).unwrap();
+
+        let decoded = Mp4a::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded, expected);
+        assert_eq!(decoded.sound_v2.unwrap().sample_rate, 96000);
+    }
+
+    // FFmpeg's layout for AAC at 96 kHz in a MOV: a version-2 entry whose `esds`
+    // sits in a `wave`.
+    #[test]
+    fn test_mp4a_sound_v2_quicktime_wave() {
+        let (audio, sound_v2) = audio_v2_placeholders();
+        let mut entry = Vec::new();
+        audio.encode_with_v2(Some(&sound_v2), &mut entry).unwrap();
+        assert_eq!(entry.len(), 64);
+        assert_eq!(entry[8..10], 2u16.to_be_bytes(), "version 2");
+
+        let mut esds_box = Vec::new();
+        esds_96k_mono().encode(&mut esds_box).unwrap();
+        let mut wave_body = Vec::new();
+        wave_body.extend_from_slice(&atom_box(b"frma", b"mp4a"));
+        wave_body.extend_from_slice(&atom_box(b"mp4a", &[0, 0, 0, 0]));
+        wave_body.extend_from_slice(&esds_box);
+        wave_body.extend_from_slice(&[0, 0, 0, 8, 0, 0, 0, 0]);
+        entry.extend_from_slice(&atom_box(b"wave", &wave_body));
+        let mp4a = atom_box(b"mp4a", &entry);
+
+        let decoded = Mp4a::decode(&mut mp4a.as_slice()).unwrap();
+        assert_eq!(decoded.audio, audio);
+        assert_eq!(decoded.sound_v2, Some(sound_v2));
+        assert_eq!(decoded.esds, esds_96k_mono());
+    }
+
     #[test]
     fn test_mp4a_with_taic() {
         let expected = Mp4a {
@@ -219,6 +317,7 @@ mod tests {
                 sample_size: 16,
                 sample_rate: 48000.into(),
             },
+            sound_v2: None,
             esds: Esds {
                 es_desc: esds::EsDescriptor {
                     es_id: 2,

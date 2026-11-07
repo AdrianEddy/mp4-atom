@@ -430,10 +430,9 @@ impl AtomExt for Stsd {
 /// The child is not decoded through `Any`: `sv3d` and `vexu` both contain an
 /// unrelated `proj`, so a FourCC means something else inside them.
 fn skip_child<B: Buf>(header: &Header, buf: &mut B, parent: FourCC) -> Result<()> {
-    let size = header.size.unwrap_or(buf.remaining());
-    if size > buf.remaining() {
+    let Some(size) = header.size_within(buf.remaining()) else {
         return Err(Error::OutOfBounds);
-    }
+    };
     if header.kind != Free::KIND && header.kind != Skip::KIND {
         let body = Vec::decode(&mut buf.slice(size))?;
         crate::decode_unknown(&Any::Unknown(header.kind, body), parent)?;

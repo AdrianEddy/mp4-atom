@@ -33,10 +33,9 @@ impl MebxSample {
         let mut found_null = false;
 
         while let Some(header) = Header::decode_maybe(buf)? {
-            let size = header.size.unwrap_or(buf.remaining());
-            if size > buf.remaining() {
+            let Some(size) = header.size_within(buf.remaining()) else {
                 return Err(Error::OutOfBounds);
-            }
+            };
             let body = buf.slice(size);
 
             if u32::from(header.kind) == 0 {

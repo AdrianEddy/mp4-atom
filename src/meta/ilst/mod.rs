@@ -32,8 +32,14 @@ pub struct Ilst {
     pub cprt: Option<Copyright>, // iTunes item, NOT the ISO CopyrightBox
 
     /// Apple `mdta`-keyed items, keyed by their 1-based index into the
-    /// sibling [`Keys`] box's entries.
-    pub mdta: Vec<(u32, IlstData)>,
+    /// sibling [`Keys`] box's entries, each with its values in order.
+    pub mdta: Vec<(u32, Vec<IlstData>)>,
+
+    /// The `data`-wrapped items this crate does not type (`©nam`, `©ART`,
+    /// `©alb`, `©cmt`, `aART`, `trkn`, …), keyed by their four-character code,
+    /// in file order, each with its values in order. A `desc`, `©too` or
+    /// `cprt` item that is not one UTF-8 value is here too.
+    pub items: Vec<(FourCC, Vec<IlstData>)>,
 }
 
 impl Atom for Ilst {
@@ -47,6 +53,7 @@ impl Atom for Ilst {
         let mut ctoo = None;
         let mut cprt = None;
         let mut mdta = vec![];
+        let mut items = vec![];
 
         // `ilst` children live in the iTunes metadata namespace, which reuses
         // fourccs of unrelated ISO atoms — an ilst `cprt` item wraps a `data`
@@ -54,33 +61,37 @@ impl Atom for Ilst {
         // Dispatch by header against the ilst namespace only, never through
         // the global `Any` table.
         while let Some(header) = Header::decode_maybe(buf)? {
-            let size = header.size.unwrap_or(buf.remaining());
-            if size > buf.remaining() {
+            let Some(size) = header.size_within(buf.remaining()) else {
                 // Truncated child: stop and let the caller's remaining-bytes
                 // check report it, matching `Any::decode_maybe`.
                 break;
-            }
+            };
             match header.kind {
                 Name::KIND => name = Some(Name::decode_atom(&header, buf)?),
                 Year::KIND => year = Some(Year::decode_atom(&header, buf)?),
                 Covr::KIND => covr = Some(Covr::decode_atom(&header, buf)?),
-                Desc::KIND => desc = Some(Desc::decode_atom(&header, buf)?),
-                Tool::KIND => ctoo = Some(Tool::decode_atom(&header, buf)?),
-                Copyright::KIND => cprt = Some(Copyright::decode_atom(&header, buf)?),
+                Desc::KIND if one_text(buf.slice(size)) => {
+                    desc = Some(Desc::decode_atom(&header, buf)?)
+                }
+                Tool::KIND if one_text(buf.slice(size)) => {
+                    ctoo = Some(Tool::decode_atom(&header, buf)?)
+                }
+                Copyright::KIND if one_text(buf.slice(size)) => {
+                    cprt = Some(Copyright::decode_atom(&header, buf)?)
+                }
                 kind => {
                     let index = u32::from(kind);
 
-                    let mdta_item = if index < MDTA_INDEX_LIMIT {
-                        IlstData::decode(&mut buf.slice(size)).ok()
-                    } else {
-                        None
-                    };
-
-                    if let Some(data) = mdta_item {
-                        mdta.push((index, data))
-                    } else {
-                        let body = Vec::decode(&mut buf.slice(size))?;
-                        Self::decode_unknown(&Any::Unknown(kind, body))?;
+                    // Any other item wrapping a `data` atom is kept by its
+                    // code (or its index); one that does not (a `----`
+                    // freeform item) is unknown.
+                    match IlstData::decode_all(&mut buf.slice(size)) {
+                        Ok(values) if index < MDTA_INDEX_LIMIT => mdta.push((index, values)),
+                        Ok(values) => items.push((kind, values)),
+                        Err(_) => {
+                            let body = Vec::decode(&mut buf.slice(size))?;
+                            Self::decode_unknown(&Any::Unknown(kind, body))?;
+                        }
                     }
 
                     buf.advance(size);
@@ -96,6 +107,7 @@ impl Atom for Ilst {
             ctoo,
             cprt,
             mdta,
+            items,
         })
     }
 
@@ -107,7 +119,7 @@ impl Atom for Ilst {
         self.ctoo.encode(buf)?;
         self.cprt.encode(buf)?;
 
-        for (index, data) in &self.mdta {
+        for (index, values) in &self.mdta {
             if *index == 0 || *index >= MDTA_INDEX_LIMIT {
                 // A top-byte-nonzero index would encode as a FourCC that
                 // looks like (or collides with) a real ASCII/Latin1 tag,
@@ -115,11 +127,36 @@ impl Atom for Ilst {
                 return Err(Error::Unsupported("mdta index out of range"));
             }
 
-            buf.encode_atom(*index, |buf| data.encode(buf))?;
+            buf.encode_atom(*index, |buf| encode_values(values, buf))?;
+        }
+
+        for (kind, values) in &self.items {
+            if u32::from(*kind) < MDTA_INDEX_LIMIT {
+                // It would decode as an `mdta` index.
+                return Err(Error::Unsupported("ilst item code out of range"));
+            }
+
+            buf.encode_atom(*kind, |buf| encode_values(values, buf))?;
         }
 
         Ok(())
     }
+}
+
+/// Whether an item's body is the one UTF-8 value a typed item holds.
+fn one_text(mut body: &[u8]) -> bool {
+    matches!(
+        IlstData::decode_all(&mut body).as_deref(),
+        Ok([IlstData {
+            value: IlstDataValue::Utf8(_),
+            ..
+        }])
+    )
+}
+
+/// An item's values, one `data` atom each, inside the one item.
+fn encode_values<B: BufMut>(values: &[IlstData], buf: &mut B) -> Result<()> {
+    values.iter().try_for_each(|data| data.encode(buf))
 }
 
 #[cfg(test)]
@@ -194,20 +231,135 @@ mod tests {
         assert_eq!(reencoded, encoded);
     }
 
-    // Unknown ilst items still go through decode_unknown (an error in
+    // An item this crate does not type is kept by its code when it wraps a
+    // `data` atom (FFmpeg's `©nam`, `©ART`, `©cmt` for `-metadata title=…`,
+    // `artist=…`, `comment=…`), in file order.
+    #[test]
+    fn test_ilst_untyped_items() {
+        let data_atom = |text: &[u8]| {
+            let mut data_body = Vec::new();
+            data_body.extend_from_slice(&1u32.to_be_bytes()); // type indicator: UTF-8
+            data_body.extend_from_slice(&0u32.to_be_bytes()); // country + language
+            data_body.extend_from_slice(text);
+            atom_box(b"data", &data_body)
+        };
+        let mut body = Vec::new();
+        body.extend_from_slice(&atom_box(b"\xa9nam", &data_atom(b"Harbour")));
+        body.extend_from_slice(&atom_box(b"\xa9ART", &data_atom(b"Some Artist")));
+        let encoded = atom_box(b"ilst", &body);
+
+        let decoded = Ilst::decode(&mut encoded.as_slice()).unwrap();
+        let text = |s: &str| IlstData {
+            country_indicator: 0,
+            language_indicator: 0,
+            value: IlstDataValue::Utf8(s.into()),
+        };
+        assert_eq!(
+            decoded,
+            Ilst {
+                items: vec![
+                    (FourCC::new(b"\xa9nam"), vec![text("Harbour")]),
+                    (FourCC::new(b"\xa9ART"), vec![text("Some Artist")]),
+                ],
+                ..Default::default()
+            }
+        );
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded).unwrap();
+        assert_eq!(reencoded, encoded);
+    }
+
+    // A multi-valued tag is one item holding several `data` atoms (as `mutagen`
+    // writes it): each atom is a value, and the item re-encodes as it came. A
+    // `desc`, `©too` or `cprt` item that is not one UTF-8 value is kept with
+    // the untyped ones.
+    #[test]
+    fn test_ilst_multi_value_items() {
+        let data_atom = |type_indicator: u32, value: &[u8]| {
+            let mut data_body = type_indicator.to_be_bytes().to_vec();
+            data_body.extend_from_slice(&0u32.to_be_bytes()); // country + language
+            data_body.extend_from_slice(value);
+            atom_box(b"data", &data_body)
+        };
+        // The second `desc` atom is 136 (0x88) bytes long, which is not UTF-8:
+        // read as the first value's text, it failed the whole `ilst`.
+        let long = [b'B'; 120];
+        let encoded = atom_box(
+            b"ilst",
+            &[
+                atom_box(
+                    &1u32.to_be_bytes(),
+                    &[data_atom(1, b"A"), data_atom(1, b"B")].concat(),
+                ),
+                atom_box(
+                    b"\xa9ART",
+                    &[data_atom(1, b"Alice"), data_atom(1, b"Bob")].concat(),
+                ),
+                atom_box(
+                    b"\xa9cmt",
+                    &[data_atom(21, &[5]), data_atom(21, &[6])].concat(),
+                ),
+                atom_box(
+                    b"desc",
+                    &[data_atom(1, b"First"), data_atom(1, &long)].concat(),
+                ),
+                atom_box(b"cprt", &data_atom(2, &[0, b'x'])),
+            ]
+            .concat(),
+        );
+
+        let decoded = Ilst::decode(&mut encoded.as_slice()).unwrap();
+        let value = |value| IlstData {
+            country_indicator: 0,
+            language_indicator: 0,
+            value,
+        };
+        let utf8 = |text: &str| value(IlstDataValue::Utf8(text.into()));
+        assert_eq!(
+            decoded,
+            Ilst {
+                mdta: vec![(1, vec![utf8("A"), utf8("B")])],
+                items: vec![
+                    (FourCC::new(b"\xa9ART"), vec![utf8("Alice"), utf8("Bob")]),
+                    (
+                        FourCC::new(b"\xa9cmt"),
+                        vec![
+                            value(IlstDataValue::BeSignedInt(5)),
+                            value(IlstDataValue::BeSignedInt(6))
+                        ]
+                    ),
+                    (
+                        FourCC::new(b"desc"),
+                        vec![utf8("First"), utf8(&"B".repeat(120))]
+                    ),
+                    (
+                        FourCC::new(b"cprt"),
+                        vec![value(IlstDataValue::Utf16("x".into()))]
+                    ),
+                ],
+                ..Default::default()
+            }
+        );
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded).unwrap();
+        assert_eq!(reencoded, encoded);
+    }
+
+    // An item that wraps no `data` atom (a `----` freeform item: `mean`,
+    // `name`, `data`) still goes through decode_unknown (an error in
     // strict/test builds, a warning otherwise).
     #[test]
     fn test_ilst_unknown_item() {
-        let mut data_body = Vec::new();
-        data_body.extend_from_slice(&1u32.to_be_bytes());
-        data_body.extend_from_slice(&0u32.to_be_bytes());
-        data_body.extend_from_slice(b"Some Artist");
-        let art_item = atom_box(b"\xa9ART", &atom_box(b"data", &data_body));
-        let encoded = atom_box(b"ilst", &art_item);
+        let mut mean = 0u32.to_be_bytes().to_vec();
+        mean.extend_from_slice(b"com.apple.iTunes");
+        let freeform = atom_box(b"----", &atom_box(b"mean", &mean));
+        let encoded = atom_box(b"ilst", &freeform);
 
         let result = Ilst::decode(&mut encoded.as_slice());
         match result {
-            Err(Error::UnexpectedBox(kind)) => assert_eq!(kind, FourCC::new(b"\xa9ART")),
+            Err(Error::UnexpectedBox(kind)) => assert_eq!(kind, FourCC::new(b"----")),
             other => panic!("expected UnexpectedBox, got {other:?}"),
         }
     }
@@ -231,11 +383,11 @@ mod tests {
             Ilst {
                 mdta: vec![(
                     1,
-                    IlstData {
+                    vec![IlstData {
                         country_indicator: 0,
                         language_indicator: 0,
                         value: IlstDataValue::Utf8("Apple".into()),
-                    }
+                    }]
                 )],
                 ..Default::default()
             }
@@ -255,11 +407,11 @@ mod tests {
         let ilst = Ilst {
             mdta: vec![(
                 MDTA_INDEX_LIMIT,
-                IlstData {
+                vec![IlstData {
                     country_indicator: 0,
                     language_indicator: 0,
                     value: IlstDataValue::Utf8("Apple".into()),
-                },
+                }],
             )],
             ..Default::default()
         };

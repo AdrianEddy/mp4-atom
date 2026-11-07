@@ -170,6 +170,7 @@ fn esds() {
                                         sample_size: 16,
                                         sample_rate: 44100.into(),
                                     },
+                                    sound_v2: None,
                                     esds: Esds {
                                         es_desc: esds::EsDescriptor {
                                             es_id: 2,

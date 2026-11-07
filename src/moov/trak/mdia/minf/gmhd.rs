@@ -82,12 +82,11 @@ fn next_child<B: Buf>(buf: &mut B) -> Option<(FourCC, Vec<u8>)> {
         buf.advance(buf.remaining());
         return None;
     };
-    let size = header.size.unwrap_or(buf.remaining());
-    if size > buf.remaining() {
+    let Some(size) = header.size_within(buf.remaining()) else {
         tracing::warn!(kind = %header.kind, "gmhd: child box runs past its parent, rest skipped");
         buf.advance(buf.remaining());
         return None;
-    }
+    };
     let body = buf.slice(size).to_vec();
     buf.advance(size);
     Some((header.kind, body))
