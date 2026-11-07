@@ -158,7 +158,8 @@ pub struct Tcmi {
     pub text_size: u16,
     pub text_color: [u16; 3],
     pub background_color: [u16; 3],
-    /// A Pascal string on the wire (one length byte, at most 255 bytes).
+    /// A Pascal string on the wire (one length byte, at most 255 bytes). A
+    /// longer name is written cut at the last character that fits.
     pub font_name: String,
 }
 
@@ -220,10 +221,9 @@ impl AtomExt for Tcmi {
         for c in self.text_color.iter().chain(&self.background_color) {
             c.encode(buf)?;
         }
-        let name = self.font_name.as_bytes();
-        let len = name.len().min(255);
-        (len as u8).encode(buf)?;
-        buf.append_slice(&name[..len]);
+        let name = bounded_str(&self.font_name, u8::MAX as usize, "tcmi font name");
+        (name.len() as u8).encode(buf)?;
+        buf.append_slice(name.as_bytes());
         Ok(())
     }
 }
@@ -317,5 +317,19 @@ mod tests {
         let with_text = [&((body.len() + 8) as u32).to_be_bytes()[..], b"gmhd", &body].concat();
         let decoded = Gmhd::decode(&mut with_text.as_slice()).unwrap();
         assert_eq!(decoded.tcmi, Some(Tcmi::default()));
+    }
+
+    #[test]
+    fn long_font_name_is_cut_at_a_character() {
+        // 256 bytes, the last character two of them: the name is cut before
+        // it, never inside it.
+        let tcmi = Tcmi {
+            font_name: format!("{}\u{e9}", "a".repeat(254)),
+            ..Tcmi::default()
+        };
+        let mut buf = Vec::new();
+        tcmi.encode(&mut buf).unwrap();
+        let decoded = Tcmi::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded.font_name, "a".repeat(254));
     }
 }

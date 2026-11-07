@@ -4,6 +4,7 @@ mod kind;
 mod loci;
 mod rtng;
 mod skip;
+mod strings;
 mod text;
 mod xmp;
 
@@ -69,32 +70,25 @@ impl Atom for Udta {
             // language — and §8.10.4 — one box per role value), and 3GPP
             // TS 26.244 clause 8 admits each asset box (`rtng` included) once
             // per language, so repeats accumulate. `meta` is "zero or one" per
-            // container (ISO/IEC 14496-12 §8.11.1), so a second one is
-            // malformed. So is a second `XMP_` (one XMP packet per file), but
-            // unlike a second `meta` it is skipped, the first kept, as a
-            // malformed `loci` is (`skip_malformed`). QuickTime keeps any
-            // number of text items, one per type and language as a rule, in
-            // file order.
+            // container (ISO/IEC 14496-12 §8.11.1), a Nero chapter list is one
+            // list, and there is one XMP packet per file, so a second `meta`,
+            // `chpl` or `XMP_` is malformed: it is skipped and the first kept,
+            // as a child that does not decode is (`skip_malformed`).
+            // QuickTime keeps any number of text items, one per type and
+            // language as a rule, in file order.
             match header.kind {
-                Chpl::KIND => {
-                    if chpl.is_some() {
-                        return Err(Error::DuplicateBox(Chpl::KIND));
-                    }
-                    chpl = Some(Chpl::decode_atom(&header, buf)?);
+                Chpl::KIND if chpl.is_some() => {
+                    skip_malformed(Chpl::KIND, size, buf, Error::DuplicateBox(Chpl::KIND))?
                 }
-                Cprt::KIND => cprt.push(Cprt::decode_atom(&header, buf)?),
-                Kind::KIND => kind.push(Kind::decode_atom(&header, buf)?),
-                Meta::KIND => {
-                    if meta.is_some() {
-                        return Err(Error::DuplicateBox(Meta::KIND));
-                    }
-                    meta = Some(Meta::decode_atom(&header, buf)?);
+                Chpl::KIND => chpl = decode_or_skip(&header, size, buf)?,
+                Cprt::KIND => cprt.extend(decode_or_skip(&header, size, buf)?),
+                Kind::KIND => kind.extend(decode_or_skip(&header, size, buf)?),
+                Meta::KIND if meta.is_some() => {
+                    skip_malformed(Meta::KIND, size, buf, Error::DuplicateBox(Meta::KIND))?
                 }
-                Rtng::KIND => rtng.push(Rtng::decode_atom(&header, buf)?),
-                Loci::KIND => match Loci::decode_atom(&header, buf) {
-                    Ok(atom) => loci.push(atom),
-                    Err(err) => skip_malformed(Loci::KIND, size, buf, err)?,
-                },
+                Meta::KIND => meta = decode_or_skip(&header, size, buf)?,
+                Rtng::KIND => rtng.extend(decode_or_skip(&header, size, buf)?),
+                Loci::KIND => loci.extend(decode_or_skip(&header, size, buf)?),
                 Xmp::KIND if xmp.is_some() => {
                     skip_malformed(Xmp::KIND, size, buf, Error::DuplicateBox(Xmp::KIND))?
                 }
@@ -142,10 +136,20 @@ impl Atom for Udta {
     }
 }
 
-/// Skip a `loci` that does not decode, or a second `XMP_`, as an unknown child
-/// is skipped: they were unknown children before this crate typed them, and one
-/// malformed tag must not make the movie unreadable. Under `strict` the error
-/// stands.
+/// A child of `size` bytes typed as `T`, or `None` when it does not decode: it
+/// is then skipped ([`skip_malformed`]).
+fn decode_or_skip<T: Atom, B: Buf>(header: &Header, size: usize, buf: &mut B) -> Result<Option<T>> {
+    match T::decode_atom(header, buf) {
+        Ok(atom) => Ok(Some(atom)),
+        Err(err) => skip_malformed(T::KIND, size, buf, err).map(|()| None),
+    }
+}
+
+/// Skip a `chpl`, `cprt`, `kind`, `meta`, `rtng` or `loci` that does not
+/// decode, or a second `chpl`, `meta` or `XMP_`, as an unknown child is
+/// skipped: one malformed tag must not make the movie unreadable, and
+/// libavformat never fails a movie over a user-data box. Under `strict` the
+/// error stands.
 fn skip_malformed<B: Buf>(kind: FourCC, size: usize, buf: &mut B, err: Error) -> Result<()> {
     if cfg!(feature = "strict") || cfg!(test) {
         tracing::error!(%kind, %err, "malformed udta child");
@@ -475,7 +479,8 @@ mod tests {
 
     // `meta` is quantity "zero or one" per container (ISO/IEC 14496-12
     // §8.11.1) — unlike the repeatable children above, a second one is
-    // malformed and must be rejected, not silently overwritten.
+    // malformed, never silently overwriting the first (outside `strict` and
+    // tests it is skipped, the first kept).
     #[test]
     fn test_udta_duplicate_meta() {
         let meta = Meta {
@@ -577,6 +582,129 @@ mod tests {
         match Udta::decode(&mut bytes.as_slice()) {
             Err(Error::DuplicateBox(kind)) => assert_eq!(kind, Xmp::KIND),
             other => panic!("expected DuplicateBox(XMP_), got {other:?}"),
+        }
+    }
+
+    // A Nero chapter list is one list: a second `chpl` is malformed, never
+    // silently replacing the first (outside `strict` and tests it is skipped,
+    // the first kept).
+    #[test]
+    fn test_udta_duplicate_chpl() {
+        let chpl = |title: &str| Chpl {
+            entries: vec![ChplEntry {
+                start: 0,
+                title: title.into(),
+            }],
+        };
+        let mut body = Vec::new();
+        chpl("First").encode(&mut body).unwrap();
+        chpl("Second").encode(&mut body).unwrap();
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
+        bytes.extend_from_slice(b"udta");
+        bytes.extend_from_slice(&body);
+
+        match Udta::decode(&mut bytes.as_slice()) {
+            Err(Error::DuplicateBox(kind)) => assert_eq!(kind, Chpl::KIND),
+            other => panic!("expected DuplicateBox(chpl), got {other:?}"),
+        }
+    }
+
+    // `size ‖ kind ‖ body`.
+    fn child(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut bytes = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    // A `udta` whose `cprt` notice is UTF-16 (ISO/IEC 14496-12 §8.10.2 allows
+    // it after a byte order mark) and whose `kind`, `rtng` and `chpl` hold text
+    // that is not UTF-8 reads whole, each with its text, and so does the text
+    // item after them. Written back, every string is UTF-8, and it reads as the
+    // same `udta`.
+    #[test]
+    fn test_udta_text_encodings() {
+        let notice = [
+            &[0, 0, 0, 0, 0x15, 0xc7, 0xfe, 0xff][..],
+            &[0x00, 0xa9, 0x00, b' ', 0x00, b'K', 0x00, 0xf6, 0x00, 0x00],
+        ]
+        .concat();
+        let kind = [&[0, 0, 0, 0][..], b"urn:example\0caf\xe9\0"].concat();
+        let rtng = [&[0, 0, 0, 0][..], b"MPAA\0\0\0\0\x15\xc7G\xe9\0"].concat();
+        // Version 0, one chapter at 0, a 4-byte title.
+        let chpl = [&[0, 0, 0, 0, 1][..], &[0; 8], &[4], b"Caf\xe9"].concat();
+        let title = [&[0, 5, 0x55, 0xc4][..], b"Title"].concat();
+        let body = [
+            child(b"cprt", &notice),
+            child(b"kind", &kind),
+            child(b"rtng", &rtng),
+            child(b"chpl", &chpl),
+            child(b"\xa9nam", &title),
+        ]
+        .concat();
+        let bytes = child(b"udta", &body);
+
+        let udta = Udta::decode(&mut bytes.as_slice()).unwrap();
+        let expected = Udta {
+            chpl: Some(Chpl {
+                entries: vec![ChplEntry {
+                    start: 0,
+                    title: "Caf\u{fffd}".into(),
+                }],
+            }),
+            cprt: vec![Cprt {
+                language: "eng".into(),
+                notice: "\u{a9} K\u{f6}".into(),
+            }],
+            kind: vec![Kind {
+                scheme_uri: "urn:example".into(),
+                value: "caf\u{fffd}".into(),
+            }],
+            rtng: vec![Rtng {
+                entity: b"MPAA".into(),
+                criteria: b"\0\0\0\0".into(),
+                language: "eng".into(),
+                rating_info: "G\u{fffd}".into(),
+            }],
+            text: vec![UdtaText {
+                kind: FourCC::new(b"\xa9nam"),
+                strings: vec![UdtaString {
+                    language: 0x55c4,
+                    text: b"Title".to_vec(),
+                }],
+                rest: vec![],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(udta, expected);
+
+        let mut encoded = Vec::new();
+        udta.encode(&mut encoded).unwrap();
+        assert_eq!(Udta::decode(&mut encoded.as_slice()).unwrap(), expected);
+    }
+
+    // A `cprt`, `kind`, `rtng`, `chpl` or `meta` too short for its fields is
+    // malformed (outside `strict` and tests it is skipped, and the children
+    // after it read).
+    #[test]
+    fn test_udta_truncated_children() {
+        let cases: [(&[u8; 4], &[u8]); 5] = [
+            (b"cprt", &[0, 0, 0, 0, 0x15]),
+            (b"kind", &[0, 0]),
+            (b"rtng", &[0, 0, 0, 0, b'M', b'P']),
+            // Cut before its count: one cut inside an entry keeps the
+            // entries before it (`chpl::tests::test_chpl_cut_short`).
+            (b"chpl", &[1, 0, 0, 0, 0, 0, 0, 0]),
+            (b"meta", &[0, 0, 0, 0]),
+        ];
+        for (kind, body) in cases {
+            let bytes = child(b"udta", &child(kind, body));
+            match Udta::decode(&mut bytes.as_slice()) {
+                Err(Error::OverDecode(atom)) => assert_eq!(atom, FourCC::new(kind)),
+                other => panic!("expected OverDecode({kind:?}), got {other:?}"),
+            }
         }
     }
 }

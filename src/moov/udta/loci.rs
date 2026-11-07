@@ -1,12 +1,16 @@
 use crate::*;
 
+use super::strings::{decode_utf8_or_16, skip_trailing};
+
 /// LocationInformationBox (3GPP TS 26.244 §8.11): where a movie was shot, or
 /// the place it shows. FFmpeg writes it for `-metadata location=…` in MP4.
 ///
 /// The three coordinates are signed 16.16 fixed-point numbers, kept as stored:
 /// degrees for longitude (east positive) and latitude (north positive), metres
 /// above sea level for altitude. The three strings are stored in UTF-8 or, after
-/// a byte order mark, UTF-16; they are kept as text and encode as UTF-8.
+/// a byte order mark, UTF-16; they are kept as text and encode as UTF-8. Bytes
+/// that do not decode (not UTF-8, or a lone UTF-16 surrogate) read as U+FFFD,
+/// so a decoded box does not keep its original bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Loci {
@@ -31,18 +35,14 @@ impl AtomExt for Loci {
 
     fn decode_body_ext<B: Buf>(buf: &mut B, _ext: ()) -> Result<Self> {
         let language = u16::decode(buf)?;
-        let name = decode_string(buf);
+        let name = decode_utf8_or_16(buf);
         let role = u8::decode(buf)?;
         let longitude = i32::decode(buf)?;
         let latitude = i32::decode(buf)?;
         let altitude = i32::decode(buf)?;
-        let astronomical_body = decode_string(buf);
-        let additional_notes = decode_string(buf);
-
-        if buf.has_remaining() {
-            tracing::warn!("Skipped {} extra trailing bytes in loci", buf.remaining());
-            buf.advance(buf.remaining());
-        }
+        let astronomical_body = decode_utf8_or_16(buf);
+        let additional_notes = decode_utf8_or_16(buf);
+        skip_trailing(Self::KIND_EXT, buf);
 
         Ok(Loci {
             language,
@@ -67,38 +67,6 @@ impl AtomExt for Loci {
         self.additional_notes.as_str().encode(buf)?;
         Ok(())
     }
-}
-
-/// A string of TS 26.244 clause 8: UTF-8 up to a NUL, or UTF-16 after a byte
-/// order mark (either byte order) up to a 16-bit NUL, or to the end of the box
-/// either way. What does not decode reads as U+FFFD, so a mislabelled name
-/// costs its text and not the coordinates after it.
-fn decode_string<B: Buf>(buf: &mut B) -> String {
-    let bytes = buf.slice(buf.remaining());
-    let (text, read) = match bytes {
-        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
-        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
-        _ => {
-            let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-            (String::from_utf8_lossy(&bytes[..len]).into_owned(), len + 1)
-        }
-    };
-    let read = read.min(bytes.len());
-    buf.advance(read);
-    text
-}
-
-/// The text of a UTF-16 string after its byte order mark, and the string's
-/// size with mark and terminator.
-fn utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> (String, usize) {
-    let units: Vec<u16> = bytes
-        .as_chunks()
-        .0
-        .iter()
-        .map(|&pair| unit(pair))
-        .take_while(|&unit| unit != 0)
-        .collect();
-    (String::from_utf16_lossy(&units), 2 * units.len() + 4)
 }
 
 #[cfg(test)]

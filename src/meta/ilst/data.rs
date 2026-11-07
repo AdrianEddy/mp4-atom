@@ -332,19 +332,30 @@ pub(crate) struct DataText {
     pub text: String,
 }
 
+/// The one UTF-8 value of a text item. An item that holds several values, or
+/// one of another type, is not one: `Ilst` keeps it with its untyped items.
 pub(crate) fn decode_text<B: Buf>(buf: &mut B) -> Result<DataText> {
-    let data = IlstData::decode(buf)?;
-    // What follows the value is not a second one: `Ilst` keeps an item that
-    // holds several in `items`.
+    let values = IlstData::decode_all(buf)?;
+    // Bytes after the last `data` atom are no value (`decode_all` stops at
+    // them); pass over them.
     buf.advance(buf.remaining());
-    match data.value {
-        IlstDataValue::Utf8(text) => Ok(DataText {
-            country_indicator: data.country_indicator,
-            language_indicator: data.language_indicator,
+    match <[IlstData; 1]>::try_from(values) {
+        Ok(
+            [IlstData {
+                country_indicator,
+                language_indicator,
+                value: IlstDataValue::Utf8(text),
+            }],
+        ) => Ok(DataText {
+            country_indicator,
+            language_indicator,
             text,
         }),
-        _ => Err(Error::Unsupported(
+        Ok(_) => Err(Error::Unsupported(
             "Only UTF-8 text is supported in ilst data atoms",
+        )),
+        Err(_) => Err(Error::Unsupported(
+            "Only one value is supported in ilst text items",
         )),
     }
 }
@@ -409,6 +420,24 @@ mod tests {
         assert_eq!(buf, LONG_STYLE);
 
         let decoded = decode_text(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded.text, "(c) 2026 x");
+    }
+
+    // A text item is one value: a second `data` atom makes it no text item
+    // (its first value alone would lose the second), while bytes after the
+    // value that are no `data` atom are no value, and are passed over.
+    #[test]
+    fn test_decode_text_one_value() {
+        let two = [LONG_STYLE, LONG_STYLE].concat();
+        assert!(matches!(
+            decode_text(&mut two.as_slice()),
+            Err(Error::Unsupported(
+                "Only one value is supported in ilst text items"
+            ))
+        ));
+
+        let trailing = [LONG_STYLE, &[0; 4][..]].concat();
+        let decoded = decode_text(&mut trailing.as_slice()).unwrap();
         assert_eq!(decoded.text, "(c) 2026 x");
     }
 

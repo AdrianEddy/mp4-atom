@@ -234,6 +234,17 @@ impl Encode for &str {
     }
 }
 
+/// `text` cut at the last character that fits in `max` bytes, for a string
+/// stored with a bounded length: what is written stays UTF-8, and a cut is
+/// logged.
+pub(crate) fn bounded_str<'a>(text: &'a str, max: usize, field: &'static str) -> &'a str {
+    let bounded = &text[..text.floor_char_boundary(max)];
+    if bounded.len() < text.len() {
+        tracing::warn!(field, len = text.len(), max, "text cut to fit its field");
+    }
+    bounded
+}
+
 impl<T: Encode> Encode for Vec<T> {
     fn encode<B: BufMut>(&self, buf: &mut B) -> Result<()> {
         for item in self.iter() {

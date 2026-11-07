@@ -242,7 +242,12 @@ where
     }
 }
 
-// 32 bytes max
+/// A visual sample entry's compressor name: a Pascal string in a 32-byte field,
+/// so at most 31 bytes.
+///
+/// Bytes that are not UTF-8 read as U+FFFD, and the name is written back as
+/// UTF-8, so a decoded entry does not keep its original bytes. A longer name
+/// is written cut at the last character that fits.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Compressor(String);
@@ -273,16 +278,16 @@ impl AsRef<str> for Compressor {
 
 impl Encode for Compressor {
     fn encode<B: BufMut>(&self, buf: &mut B) -> Result<()> {
-        let name = self.0.as_bytes();
-        let len = name.len();
-        if len > 31 {
-            return Err(Error::InvalidSize);
-        }
-        (len as u8).encode(buf)?;
-        (&name[..len]).encode(buf)?;
+        // A name read from a field with no length byte, or read with U+FFFD,
+        // can be longer than the 31 bytes the field holds, so the encoder
+        // bounds it, as FFmpeg's writer bounds its own, rather than refusing
+        // it.
+        let name = bounded_str(&self.0, 31, "compressor name");
+        (name.len() as u8).encode(buf)?;
+        buf.append_slice(name.as_bytes());
 
         let zero = [0u8; 31];
-        (&zero[..31 - len]).encode(buf)
+        (&zero[..31 - name.len()]).encode(buf)
     }
 }
 
@@ -467,12 +472,37 @@ mod tests {
         assert_eq!(decode, compressor);
     }
 
+    // A name longer than the field holds is written cut at the last character
+    // that fits, never inside one.
     #[test]
     fn check_compressor_encode_too_long() {
         let compressor = Compressor::from("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef");
         let mut buf = Vec::new();
-        let result = compressor.encode(&mut buf);
-        assert!(result.is_err());
+        compressor.encode(&mut buf).unwrap();
+        assert_eq!(buf.len(), 32);
+        let decode = Compressor::decode(&mut buf.as_ref()).unwrap();
+        assert_eq!(decode, Compressor::from("ABCDEFGHIJKLMNOPQRSTUVWXYZabcde"));
+
+        let compressor = Compressor::from(format!("{}\u{e9}", "a".repeat(30)));
+        let mut buf = Vec::new();
+        compressor.encode(&mut buf).unwrap();
+        assert_eq!(buf.len(), 32);
+        let decode = Compressor::decode(&mut buf.as_ref()).unwrap();
+        assert_eq!(decode, Compressor::from("a".repeat(30)));
+    }
+
+    // A field whose first byte is not a length reads as 32 bytes of text,
+    // which is written back as the 31 that fit.
+    #[test]
+    fn check_compressor_without_length_round_trips() {
+        let field = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
+        let compressor = Compressor::decode(&mut field.as_ref()).unwrap();
+        assert_eq!(compressor.as_ref(), "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef");
+
+        let mut buf = Vec::new();
+        compressor.encode(&mut buf).unwrap();
+        assert_eq!(buf[0], 31);
+        assert_eq!(&buf[1..], &field[..31]);
     }
 
     #[test]

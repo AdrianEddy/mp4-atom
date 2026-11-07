@@ -37,8 +37,17 @@ pub struct Ilst {
 
     /// The `data`-wrapped items this crate does not type (`©nam`, `©ART`,
     /// `©alb`, `©cmt`, `aART`, `trkn`, …), keyed by their four-character code,
-    /// in file order, each with its values in order. A `desc`, `©too` or
-    /// `cprt` item that is not one UTF-8 value is here too.
+    /// in file order, each with its values in order.
+    ///
+    /// A typed field holds the first item of its kind that types, which need
+    /// not be the first of its kind in the file. Any other item of a typed
+    /// kind is here only when it wraps `data` atoms: a `name` or `day `
+    /// wrapping one, a `desc`, `©too` or `cprt` that is not one UTF-8 value,
+    /// and a repeat of a kind whose field is already filled. A repeat that
+    /// wraps none (a bare `name` or `day ` string, a raw `covr`) is treated as
+    /// an unknown item, as a `----` freeform item is: dropped with a warning,
+    /// or an error under `strict`. A consumer that needs every value of a key
+    /// reads its typed field and these items both.
     pub items: Vec<(FourCC, Vec<IlstData>)>,
 }
 
@@ -66,37 +75,33 @@ impl Atom for Ilst {
                 // check report it, matching `Any::decode_maybe`.
                 break;
             };
-            match header.kind {
-                Name::KIND => name = Some(Name::decode_atom(&header, buf)?),
-                Year::KIND => year = Some(Year::decode_atom(&header, buf)?),
-                Covr::KIND => covr = Some(Covr::decode_atom(&header, buf)?),
-                Desc::KIND if one_text(buf.slice(size)) => {
-                    desc = Some(Desc::decode_atom(&header, buf)?)
-                }
-                Tool::KIND if one_text(buf.slice(size)) => {
-                    ctoo = Some(Tool::decode_atom(&header, buf)?)
-                }
-                Copyright::KIND if one_text(buf.slice(size)) => {
-                    cprt = Some(Copyright::decode_atom(&header, buf)?)
-                }
-                kind => {
-                    let index = u32::from(kind);
+            let body = buf.slice(size);
+            let kind = header.kind;
 
-                    // Any other item wrapping a `data` atom is kept by its
-                    // code (or its index); one that does not (a `----`
-                    // freeform item) is unknown.
-                    match IlstData::decode_all(&mut buf.slice(size)) {
-                        Ok(values) if index < MDTA_INDEX_LIMIT => mdta.push((index, values)),
-                        Ok(values) => items.push((kind, values)),
-                        Err(_) => {
-                            let body = Vec::decode(&mut buf.slice(size))?;
-                            Self::decode_unknown(&Any::Unknown(kind, body))?;
-                        }
-                    }
-
-                    buf.advance(size);
+            // A typed field holds the first item of its kind that types. Every
+            // other item that wraps `data` atoms is kept by its code (or its
+            // index) with its values, as libavformat reads any such item, so
+            // no one item fails the list. One that wraps none (a `----`
+            // freeform item) is unknown.
+            let typed = match kind {
+                Name::KIND => type_once(&mut name, body),
+                Year::KIND => type_once(&mut year, body),
+                Covr::KIND => type_once(&mut covr, body),
+                Desc::KIND => type_once(&mut desc, body),
+                Tool::KIND => type_once(&mut ctoo, body),
+                Copyright::KIND => type_once(&mut cprt, body),
+                _ => false,
+            };
+            if !typed {
+                let index = u32::from(kind);
+                match IlstData::decode_all(&mut &body[..]) {
+                    Ok(values) if index < MDTA_INDEX_LIMIT => mdta.push((index, values)),
+                    Ok(values) => items.push((kind, values)),
+                    Err(_) => Self::decode_unknown(&Any::Unknown(kind, body.to_vec()))?,
                 }
             }
+
+            buf.advance(size);
         }
 
         Ok(Ilst {
@@ -143,15 +148,19 @@ impl Atom for Ilst {
     }
 }
 
-/// Whether an item's body is the one UTF-8 value a typed item holds.
-fn one_text(mut body: &[u8]) -> bool {
-    matches!(
-        IlstData::decode_all(&mut body).as_deref(),
-        Ok([IlstData {
-            value: IlstDataValue::Utf8(_),
-            ..
-        }])
-    )
+/// Type an item into `slot` when the slot is empty and the item's body is one
+/// whole `T`. Whether it did.
+fn type_once<T: Atom>(slot: &mut Option<T>, mut body: &[u8]) -> bool {
+    if slot.is_some() {
+        return false;
+    }
+    match T::decode_body(&mut body) {
+        Ok(atom) if body.is_empty() => {
+            *slot = Some(atom);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// An item's values, one `data` atom each, inside the one item.
@@ -345,6 +354,213 @@ mod tests {
         let mut reencoded = Vec::new();
         decoded.encode(&mut reencoded).unwrap();
         assert_eq!(reencoded, encoded);
+    }
+
+    // A `data` atom holding `value` under `type_indicator`, of no country or
+    // language.
+    fn data_atom(type_indicator: u32, value: &[u8]) -> Vec<u8> {
+        let mut body = type_indicator.to_be_bytes().to_vec();
+        body.extend_from_slice(&0u32.to_be_bytes()); // country + language
+        body.extend_from_slice(value);
+        atom_box(b"data", &body)
+    }
+
+    fn untyped(value: IlstDataValue) -> IlstData {
+        IlstData {
+            country_indicator: 0,
+            language_indicator: 0,
+            value,
+        }
+    }
+
+    // An item of a kind this crate types that does not type is kept with the
+    // untyped items, its values as they read: a `name` or `day ` wrapping a
+    // `data` atom, as iTunes items do and as libavformat reads them (this crate
+    // types these two as bare strings), and a `desc`, `©too` or `cprt` whose
+    // value is not UTF-8 text. None of them fails the `ilst`, and the item
+    // after them still reads.
+    #[test]
+    fn test_ilst_untypeable_items() {
+        let latin1 = b"Caf\xe9";
+        let lone_surrogate = [0xd8, 0x00];
+        let encoded = atom_box(
+            b"ilst",
+            &[
+                atom_box(b"name", &data_atom(1, b"Harbour")),
+                atom_box(b"day ", &data_atom(1, b"2026")),
+                atom_box(b"desc", &data_atom(1, latin1)),
+                atom_box(b"\xa9too", &data_atom(2, &lone_surrogate)),
+                atom_box(b"cprt", &data_atom(21, &[7])),
+                atom_box(b"\xa9nam", &data_atom(1, b"Title")),
+            ]
+            .concat(),
+        );
+
+        let decoded = Ilst::decode(&mut encoded.as_slice()).unwrap();
+        let utf8 = |text: &str| untyped(IlstDataValue::Utf8(text.into()));
+        assert_eq!(
+            decoded,
+            Ilst {
+                items: vec![
+                    (FourCC::new(b"name"), vec![utf8("Harbour")]),
+                    (FourCC::new(b"day "), vec![utf8("2026")]),
+                    (
+                        FourCC::new(b"desc"),
+                        vec![untyped(IlstDataValue::Unknown(1, latin1.to_vec()))]
+                    ),
+                    (
+                        FourCC::new(b"\xa9too"),
+                        vec![untyped(IlstDataValue::Unknown(2, lone_surrogate.to_vec()))]
+                    ),
+                    (
+                        FourCC::new(b"cprt"),
+                        vec![untyped(IlstDataValue::BeSignedInt(7))]
+                    ),
+                    (FourCC::new(b"\xa9nam"), vec![utf8("Title")]),
+                ],
+                ..Default::default()
+            }
+        );
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded).unwrap();
+        assert_eq!(reencoded, encoded);
+    }
+
+    // A bare `name` string that is not UTF-8 is neither a `Name` nor an item
+    // wrapping a `data` atom: it goes where an unknown item goes (an error in
+    // strict/test builds, a warning otherwise), not out of the `ilst` as an
+    // invalid string.
+    #[test]
+    fn test_ilst_unreadable_bare_name() {
+        let encoded = atom_box(b"ilst", &atom_box(b"name", b"Caf\xe9\0"));
+        match Ilst::decode(&mut encoded.as_slice()) {
+            Err(Error::UnexpectedBox(kind)) => assert_eq!(kind, Name::KIND),
+            other => panic!("expected UnexpectedBox(name), got {other:?}"),
+        }
+    }
+
+    // A typed field holds the first item of its kind that types. A later one
+    // that wraps `data` atoms is kept with the untyped items, in file order,
+    // rather than replacing it: libavformat appends a repeated item's values
+    // to the first one's.
+    #[test]
+    fn test_ilst_repeated_typed_items() {
+        let jpeg = [0xff, 0xd8, 0xff, 0xd9];
+        let png = [0x89, b'P', b'N', b'G'];
+        let first_covr = data_atom(13, &jpeg);
+        let encoded = atom_box(
+            b"ilst",
+            &[
+                atom_box(b"desc", &data_atom(1, b"First")),
+                atom_box(b"\xa9too", &data_atom(1, b"Lavf61.7.100")),
+                atom_box(b"desc", &data_atom(1, b"Second")),
+                atom_box(b"covr", &first_covr),
+                atom_box(b"covr", &data_atom(14, &png)),
+                atom_box(b"\xa9too", &data_atom(1, b"HandBrake 1.8.0")),
+            ]
+            .concat(),
+        );
+
+        let decoded = Ilst::decode(&mut encoded.as_slice()).unwrap();
+        let text = |text: &str| untyped(IlstDataValue::Utf8(text.into()));
+        assert_eq!(
+            decoded,
+            Ilst {
+                covr: Some(Covr(first_covr)),
+                desc: Some(Desc {
+                    country_indicator: 0,
+                    language_indicator: 0,
+                    text: "First".into(),
+                }),
+                ctoo: Some(Tool {
+                    country_indicator: 0,
+                    language_indicator: 0,
+                    text: "Lavf61.7.100".into(),
+                }),
+                items: vec![
+                    (FourCC::new(b"desc"), vec![text("Second")]),
+                    (
+                        FourCC::new(b"covr"),
+                        vec![untyped(IlstDataValue::Png(png.to_vec()))]
+                    ),
+                    (FourCC::new(b"\xa9too"), vec![text("HandBrake 1.8.0")]),
+                ],
+                ..Default::default()
+            }
+        );
+
+        // Each item is written back; the typed fields come first.
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded).unwrap();
+        assert_eq!(Ilst::decode(&mut reencoded.as_slice()).unwrap(), decoded);
+    }
+
+    // A repeat of a typed kind that wraps no `data` atom (a second bare `name`
+    // or `day ` string, a second raw `covr`) cannot be kept with the untyped
+    // items: it goes where an unknown item goes (an error in strict/test
+    // builds, a warning otherwise).
+    #[test]
+    fn test_ilst_repeated_bare_items() {
+        let cases: [(&[u8; 4], &[u8]); 3] = [
+            (b"name", b"Harbour\0"),
+            (b"day ", b"2026\0"),
+            (b"covr", &[0xff, 0xd8, 0xff, 0xd9]),
+        ];
+        for (kind, body) in cases {
+            let item = atom_box(kind, body);
+            let encoded = atom_box(b"ilst", &[item.as_slice(), &item].concat());
+            match Ilst::decode(&mut encoded.as_slice()) {
+                Err(Error::UnexpectedBox(atom)) => assert_eq!(atom, FourCC::new(kind)),
+                other => panic!("expected UnexpectedBox({kind:?}), got {other:?}"),
+            }
+        }
+    }
+
+    // A movie whose `udta/meta/ilst` holds items that do not type reads whole,
+    // with those items kept: the same items this crate writes for them.
+    #[test]
+    fn test_moov_with_untypeable_ilst_items() {
+        let ilst = Ilst {
+            items: vec![
+                (
+                    FourCC::new(b"name"),
+                    vec![untyped(IlstDataValue::Utf8("Harbour".into()))],
+                ),
+                (
+                    FourCC::new(b"desc"),
+                    vec![untyped(IlstDataValue::Unknown(1, b"Caf\xe9".to_vec()))],
+                ),
+            ],
+            ..Default::default()
+        };
+        let mut meta = Meta {
+            hdlr: Hdlr {
+                handler: FourCC::new(b"mdir"),
+                name: "".into(),
+                component_type: None,
+            },
+            items: vec![],
+        };
+        meta.push(ilst.clone());
+        let moov = Moov {
+            mvhd: Mvhd {
+                timescale: 1000,
+                next_track_id: 1,
+                ..Default::default()
+            },
+            udta: Some(Udta {
+                meta: Some(meta),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut encoded = Vec::new();
+        moov.encode(&mut encoded).unwrap();
+        let decoded = Moov::decode(&mut encoded.as_slice()).unwrap();
+        let meta = decoded.udta.and_then(|udta| udta.meta).unwrap();
+        assert_eq!(meta.get::<Ilst>(), Some(&ilst));
     }
 
     // An item that wraps no `data` atom (a `----` freeform item: `mean`,
