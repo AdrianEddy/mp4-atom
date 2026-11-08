@@ -7,6 +7,8 @@ use crate::*;
 pub struct Eac3 {
     pub audio: Audio,
     pub dec3: Ec3SpecificBox,
+    /// The spatial-audio box: the channels are an ambisonic sound field.
+    pub sa3d: Option<Sa3d>,
 }
 
 impl Atom for Eac3 {
@@ -16,12 +18,14 @@ impl Atom for Eac3 {
         let audio = Audio::decode(buf)?;
 
         let mut dec3 = None;
+        let mut sa3d = None;
 
         // The `dec3` sits directly under `ec-3` (ISO-BMFF) or nested inside a
         // QuickTime `wave` (siDecompressionParam) box (QTFF).
         while let Some(atom) = Any::decode_maybe(buf)? {
             match atom {
                 Any::Ec3SpecificBox(atom) => dec3 = atom.into(),
+                Any::Sa3d(atom) => sa3d = atom.into(),
                 Any::Unknown(kind, body) if kind == super::ac3::WAVE => {
                     if let Some(atom) = super::ac3::wave_child::<Ec3SpecificBox>(&body)? {
                         dec3 = Some(atom);
@@ -35,12 +39,14 @@ impl Atom for Eac3 {
         Ok(Self {
             audio,
             dec3: dec3.ok_or(Error::MissingBox(Ec3SpecificBox::KIND))?,
+            sa3d,
         })
     }
 
     fn encode_body<B: BufMut>(&self, buf: &mut B) -> Result<()> {
         self.audio.encode(buf)?;
         self.dec3.encode(buf)?;
+        self.sa3d.encode(buf)?;
         Ok(())
     }
 }
@@ -207,7 +213,8 @@ mod tests {
                         chan_loc: None
                     }],
                     complexity_index_type_a: None,
-                }
+                },
+                sa3d: None,
             }
         );
     }
@@ -235,6 +242,7 @@ mod tests {
                 }],
                 complexity_index_type_a: None,
             },
+            sa3d: None,
         };
 
         let mut buf = Vec::new();
@@ -267,6 +275,7 @@ mod tests {
                 }],
                 complexity_index_type_a: None,
             },
+            sa3d: None,
         };
 
         // Encode
@@ -317,6 +326,7 @@ mod tests {
                 ],
                 complexity_index_type_a: None,
             },
+            sa3d: None,
         };
 
         // Encode
@@ -355,6 +365,7 @@ mod tests {
                 }],
                 complexity_index_type_a: Some(16),
             },
+            sa3d: None,
         };
         let mut buf = Vec::new();
         eac3.encode(&mut buf).unwrap();
@@ -406,7 +417,8 @@ mod tests {
                         chan_loc: None
                     }],
                     complexity_index_type_a: None,
-                }
+                },
+                sa3d: None,
             }
         );
     }

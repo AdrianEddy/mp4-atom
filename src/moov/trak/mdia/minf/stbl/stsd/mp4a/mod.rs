@@ -14,6 +14,8 @@ pub struct Mp4a {
     /// then hold placeholders — see [`SoundV2`].
     pub sound_v2: Option<SoundV2>,
     pub esds: Esds,
+    /// The spatial-audio box: the channels are an ambisonic sound field.
+    pub sa3d: Option<Sa3d>,
     pub btrt: Option<Btrt>,
     pub taic: Option<Taic>,
 }
@@ -26,6 +28,7 @@ impl Atom for Mp4a {
 
         let mut btrt = None;
         let mut esds = None;
+        let mut sa3d = None;
         let mut taic = None;
 
         // The `esds` sits directly under `mp4a` (ISO-BMFF) or nested inside a
@@ -35,6 +38,7 @@ impl Atom for Mp4a {
             match atom {
                 Any::Btrt(atom) => btrt = atom.into(),
                 Any::Esds(atom) => esds = atom.into(),
+                Any::Sa3d(atom) => sa3d = atom.into(),
                 Any::Taic(atom) => taic = atom.into(),
                 Any::Unknown(kind, body) if kind == WAVE => {
                     decode_wave(&body, &mut esds, &mut btrt)?;
@@ -48,6 +52,7 @@ impl Atom for Mp4a {
             audio,
             sound_v2,
             esds: esds.ok_or(Error::MissingBox(Esds::KIND))?,
+            sa3d,
             btrt,
             taic,
         })
@@ -56,6 +61,7 @@ impl Atom for Mp4a {
     fn encode_body<B: BufMut>(&self, buf: &mut B) -> Result<()> {
         self.audio.encode_with_v2(self.sound_v2.as_ref(), buf)?;
         self.esds.encode(buf)?;
+        self.sa3d.encode(buf)?;
         self.btrt.encode(buf)?;
         self.taic.encode(buf)?;
 
@@ -130,6 +136,7 @@ mod tests {
                 avg_bitrate: 3,
             }),
             taic: None,
+            sa3d: None,
         };
         let mut buf = Vec::new();
         expected.encode(&mut buf).unwrap();
@@ -273,6 +280,7 @@ mod tests {
             esds: esds_96k_mono(),
             btrt: None,
             taic: None,
+            sa3d: None,
         };
         let mut buf = Vec::new();
         expected.encode(&mut buf).unwrap();
@@ -345,12 +353,46 @@ mod tests {
                 clock_drift_rate: 4,
                 clock_type: ClockType::CanSync,
             }),
+            sa3d: None,
         };
         let mut buf = Vec::new();
         expected.encode(&mut buf).unwrap();
 
         let mut buf = buf.as_ref();
         let decoded = Mp4a::decode(&mut buf).unwrap();
+        assert_eq!(decoded, expected);
+    }
+
+    /// A first-order sound field: the `SA3D` box follows the `esds`, as
+    /// libavformat's `mov_write_audio_tag` writes it, and both survive a decode
+    /// → encode → decode round trip.
+    #[test]
+    fn test_mp4a_with_sa3d() {
+        let expected = Mp4a {
+            audio: Audio {
+                data_reference_index: 1,
+                channel_count: 4,
+                sample_size: 16,
+                sample_rate: 48000.into(),
+            },
+            sound_v2: None,
+            esds: esds_96k_mono(),
+            sa3d: Some(Sa3d {
+                ambisonic_order: 1,
+                channel_map: vec![0, 1, 2, 3],
+                ..Default::default()
+            }),
+            btrt: None,
+            taic: None,
+        };
+
+        let mut buf = Vec::new();
+        expected.encode(&mut buf).unwrap();
+        let esds_at = buf.windows(4).position(|w| w == b"esds").unwrap();
+        let sa3d_at = buf.windows(4).position(|w| w == b"SA3D").unwrap();
+        assert!(sa3d_at > esds_at, "SA3D follows the esds");
+
+        let decoded = Mp4a::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(decoded, expected);
     }
 }

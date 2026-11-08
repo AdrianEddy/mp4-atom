@@ -134,6 +134,7 @@ fn flac() {
                                             },
                                         ],
                                     },
+                                    sa3d: None,
                                 }
                                 .into(),]
                             },

@@ -269,6 +269,7 @@ fn avcc_ext() {
                                         avg_bitrate: 160000,
                                     }),
                                     taic: None,
+                                    sa3d: None,
                                 }
                                 .into()],
                             },

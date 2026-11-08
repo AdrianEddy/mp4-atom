@@ -9,6 +9,8 @@ use crate::*;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Mp3 {
     pub audio: Audio,
+    /// The spatial-audio box: the channels are an ambisonic sound field.
+    pub sa3d: Option<Sa3d>,
 }
 
 impl Atom for Mp3 {
@@ -17,16 +19,21 @@ impl Atom for Mp3 {
     fn decode_body<B: Buf>(buf: &mut B) -> Result<Self> {
         let audio = Audio::decode(buf)?;
 
+        let mut sa3d = None;
         while let Some(atom) = Any::decode_maybe(buf)? {
-            Self::decode_unknown(&atom)?;
+            match atom {
+                Any::Sa3d(atom) => sa3d = atom.into(),
+                unknown => Self::decode_unknown(&unknown)?,
+            }
         }
         skip_trailing_padding(buf);
 
-        Ok(Self { audio })
+        Ok(Self { audio, sa3d })
     }
 
     fn encode_body<B: BufMut>(&self, buf: &mut B) -> Result<()> {
         self.audio.encode(buf)?;
+        self.sa3d.encode(buf)?;
         Ok(())
     }
 }
@@ -55,7 +62,8 @@ mod tests {
                     channel_count: 2,
                     sample_size: 16,
                     sample_rate: 44100.into(),
-                }
+                },
+                sa3d: None,
             }
         );
     }
@@ -69,6 +77,7 @@ mod tests {
                 sample_size: 16,
                 sample_rate: 44100.into(),
             },
+            sa3d: None,
         };
 
         let mut buf = Vec::new();

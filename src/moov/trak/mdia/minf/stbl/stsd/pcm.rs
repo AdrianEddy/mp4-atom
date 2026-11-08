@@ -64,6 +64,8 @@ pub struct Pcm {
     pub audio: Audio,
     pub pcmc: Option<PcmC>,
     pub chnl: Option<Chnl>,
+    /// The spatial-audio box: the channels are an ambisonic sound field.
+    pub sa3d: Option<Sa3d>,
     pub btrt: Option<Btrt>,
     /// QuickTime version-2 sound sample description fields, when the entry was
     /// written as a v2 `AudioSampleEntry` (the `lpcm` case — see [`SoundV2`]).
@@ -77,6 +79,7 @@ impl Pcm {
         audio: &Audio,
         pcmc: Option<&PcmC>,
         chnl: Option<&Chnl>,
+        sa3d: Option<&Sa3d>,
         btrt: Option<&Btrt>,
         sound_v2: Option<&SoundV2>,
         buf: &mut B,
@@ -96,6 +99,10 @@ impl Pcm {
             chnl.encode(buf)?;
         }
 
+        if let Some(sa3d) = sa3d {
+            sa3d.encode(buf)?;
+        }
+
         if let Some(btrt) = btrt {
             btrt.encode(buf)?;
         }
@@ -108,6 +115,7 @@ impl Pcm {
 
         let mut chnl = None;
         let mut pcmc = None;
+        let mut sa3d = None;
         let mut btrt = None;
 
         while buf.remaining() > 0 {
@@ -133,6 +141,7 @@ impl Pcm {
             } else {
                 match Any::decode_atom(&header, &mut limited)? {
                     Any::PcmC(atom) => pcmc = Some(atom),
+                    Any::Sa3d(atom) => sa3d = Some(atom),
                     Any::Btrt(atom) => btrt = Some(atom),
                     atom => crate::decode_unknown(&atom, fourcc)?,
                 }
@@ -151,6 +160,7 @@ impl Pcm {
             audio,
             pcmc,
             chnl,
+            sa3d,
             btrt,
             sound_v2,
         })
@@ -162,6 +172,7 @@ impl Pcm {
             &self.audio,
             self.pcmc.as_ref(),
             self.chnl.as_ref(),
+            self.sa3d.as_ref(),
             self.btrt.as_ref(),
             self.sound_v2.as_ref(),
             buf,
@@ -272,6 +283,8 @@ macro_rules! define_pcm_sample_entry {
             pub audio: Audio,
             pub pcmc: Option<PcmC>,
             pub chnl: Option<Chnl>,
+            /// The spatial-audio box: the channels are an ambisonic sound field.
+            pub sa3d: Option<Sa3d>,
             pub btrt: Option<Btrt>,
         }
 
@@ -295,6 +308,7 @@ macro_rules! define_pcm_sample_entry {
                     audio: entry.audio,
                     pcmc: entry.pcmc,
                     chnl: entry.chnl,
+                    sa3d: entry.sa3d,
                     btrt: entry.btrt,
                 })
             }
@@ -305,6 +319,7 @@ macro_rules! define_pcm_sample_entry {
                     &self.audio,
                     self.pcmc.as_ref(),
                     self.chnl.as_ref(),
+                    self.sa3d.as_ref(),
                     self.btrt.as_ref(),
                     None,
                     buf,
@@ -336,6 +351,8 @@ pub struct Lpcm {
     pub audio: Audio,
     pub pcmc: Option<PcmC>,
     pub chnl: Option<Chnl>,
+    /// The spatial-audio box: the channels are an ambisonic sound field.
+    pub sa3d: Option<Sa3d>,
     pub btrt: Option<Btrt>,
     pub sound_v2: Option<SoundV2>,
 }
@@ -362,6 +379,7 @@ impl Atom for Lpcm {
             audio: entry.audio,
             pcmc: entry.pcmc,
             chnl: entry.chnl,
+            sa3d: entry.sa3d,
             btrt: entry.btrt,
             sound_v2: entry.sound_v2,
         })
@@ -373,6 +391,7 @@ impl Atom for Lpcm {
             &self.audio,
             self.pcmc.as_ref(),
             self.chnl.as_ref(),
+            self.sa3d.as_ref(),
             self.btrt.as_ref(),
             self.sound_v2.as_ref(),
             buf,
@@ -426,6 +445,7 @@ mod tests {
             chnl: Some(chnl),
             btrt: None,
             sound_v2: None,
+            sa3d: None,
         };
 
         let mut buf = Vec::new();
@@ -463,6 +483,7 @@ mod tests {
             chnl: Some(chnl),
             btrt: None,
             sound_v2: None,
+            sa3d: None,
         };
 
         let mut buf = Vec::new();
@@ -505,6 +526,7 @@ mod tests {
                 avg_bitrate: 2_304_000,
             }),
             sound_v2: None,
+            sa3d: None,
         };
 
         let mut buf = Vec::new();
@@ -543,6 +565,7 @@ mod tests {
             chnl: Some(chnl),
             btrt: None,
             sound_v2: None,
+            sa3d: None,
         };
 
         let mut buf = Vec::new();
@@ -584,6 +607,7 @@ mod tests {
             chnl: Some(chnl),
             btrt: None,
             sound_v2: None,
+            sa3d: None,
         };
 
         let mut buf = Vec::new();
@@ -621,6 +645,7 @@ mod tests {
             chnl: Some(chnl),
             btrt: None,
             sound_v2: None,
+            sa3d: None,
         };
 
         let mut buf = Vec::new();
@@ -654,6 +679,7 @@ mod tests {
                 bytes_per_packet: 6,
                 lpcm_frames_per_packet: 1,
             }),
+            sa3d: None,
         };
 
         // Round-trips through the version-2 encoding.
@@ -700,6 +726,7 @@ mod tests {
                 bytes_per_packet: 0,
                 lpcm_frames_per_packet: 1,
             }),
+            sa3d: None,
         };
 
         // 0x1_0010 is 16 once truncated to 16 bits.
@@ -753,6 +780,7 @@ mod tests {
                 max_bitrate: 2_304_096,
                 avg_bitrate: 2_304_000,
             }),
+            sa3d: None,
         }
     }
 
@@ -804,6 +832,7 @@ mod tests {
                 pcmc: None,
                 chnl: None,
                 btrt: None,
+                sa3d: None,
             }
         );
         assert_eq!(
@@ -851,6 +880,7 @@ mod tests {
             pcmc: None,
             chnl: None,
             btrt: None,
+            sa3d: None,
         };
 
         let mut buf = Vec::new();
@@ -858,5 +888,40 @@ mod tests {
             ipcm.encode(&mut buf),
             Err(Error::MissingBox(PcmC::KIND))
         ));
+    }
+
+    /// GoPro MAX's ambisonic track: a QuickTime version-1 `in32` sound
+    /// description carrying a first-order `SA3D` box. The box is read, and
+    /// written back after the entry's other children.
+    #[test]
+    fn test_in32_v1_sa3d() {
+        let mut entry = vec![0; 6]; // reserved
+        entry.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+        entry.extend_from_slice(&1u16.to_be_bytes()); // version 1
+        entry.extend_from_slice(&[0; 6]); // revision, vendor
+        entry.extend_from_slice(&4u16.to_be_bytes()); // channels
+        entry.extend_from_slice(&16u16.to_be_bytes()); // sample size
+        entry.extend_from_slice(&[0; 4]); // compression id, packet size
+        entry.extend_from_slice(&(48000u32 << 16).to_be_bytes());
+        for field in [1u32, 4, 16, 2] {
+            entry.extend_from_slice(&field.to_be_bytes()); // version-1 fields
+        }
+        let sa3d = Sa3d {
+            ambisonic_order: 1,
+            channel_map: vec![0, 1, 2, 3],
+            ..Default::default()
+        };
+        sa3d.encode(&mut entry).unwrap();
+        let mut boxed = ((8 + entry.len()) as u32).to_be_bytes().to_vec();
+        boxed.extend_from_slice(b"in32");
+        boxed.extend_from_slice(&entry);
+
+        let decoded = In32::decode(&mut boxed.as_slice()).unwrap();
+        assert_eq!(decoded.audio.channel_count, 4);
+        assert_eq!(decoded.sa3d, Some(sa3d));
+
+        let mut encoded = Vec::new();
+        decoded.encode(&mut encoded).unwrap();
+        assert_eq!(In32::decode(&mut encoded.as_slice()).unwrap(), decoded);
     }
 }

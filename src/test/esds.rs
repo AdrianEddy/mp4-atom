@@ -192,6 +192,7 @@ fn esds() {
                                     },
                                     btrt: Some(Btrt { buffer_size_db: 0, max_bitrate: 128000, avg_bitrate: 128000 }),
                                     taic: None,
+                                    sa3d: None,
                                 }
                                 .into()],
                             },

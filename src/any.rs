@@ -288,6 +288,8 @@ any! {
                             Jpeg,
                             Hev1, Hvc1,
                                 Hvcc, Lhvc,
+                            // The spatial-audio box, on any sound sample entry.
+                            Sa3d,
                             Mp4a,
                                 Esds,
                             Mp3,

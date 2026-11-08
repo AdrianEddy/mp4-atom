@@ -5,6 +5,8 @@ use crate::*;
 pub struct Opus {
     pub audio: Audio,
     pub dops: Dops,
+    /// The spatial-audio box: the channels are an ambisonic sound field.
+    pub sa3d: Option<Sa3d>,
     pub btrt: Option<Btrt>,
 }
 
@@ -15,12 +17,14 @@ impl Atom for Opus {
         let audio = Audio::decode(buf)?;
 
         let mut dops = None;
+        let mut sa3d = None;
         let mut btrt = None;
 
         // Find d0ps in mp4a or wave
         while let Some(atom) = Any::decode_maybe(buf)? {
             match atom {
                 Any::Dops(atom) => dops = atom.into(),
+                Any::Sa3d(atom) => sa3d = atom.into(),
                 Any::Btrt(atom) => btrt = atom.into(),
                 unknown => Self::decode_unknown(&unknown)?,
             }
@@ -30,6 +34,7 @@ impl Atom for Opus {
         Ok(Self {
             audio,
             dops: dops.ok_or(Error::MissingBox(Dops::KIND))?,
+            sa3d,
             btrt,
         })
     }
@@ -37,6 +42,7 @@ impl Atom for Opus {
     fn encode_body<B: BufMut>(&self, buf: &mut B) -> Result<()> {
         self.audio.encode(buf)?;
         self.dops.encode(buf)?;
+        self.sa3d.encode(buf)?;
         self.btrt.encode(buf)?;
         Ok(())
     }

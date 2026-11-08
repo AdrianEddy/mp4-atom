@@ -7,6 +7,8 @@ use crate::*;
 pub struct Ac3 {
     pub audio: Audio,
     pub dac3: Ac3SpecificBox,
+    /// The spatial-audio box: the channels are an ambisonic sound field.
+    pub sa3d: Option<Sa3d>,
 }
 
 impl Atom for Ac3 {
@@ -16,12 +18,14 @@ impl Atom for Ac3 {
         let audio = Audio::decode(buf)?;
 
         let mut dac3 = None;
+        let mut sa3d = None;
 
         // The `dac3` sits directly under `ac-3` (ISO-BMFF) or nested inside a
         // QuickTime `wave` (siDecompressionParam) box (QTFF).
         while let Some(atom) = Any::decode_maybe(buf)? {
             match atom {
                 Any::Ac3SpecificBox(atom) => dac3 = atom.into(),
+                Any::Sa3d(atom) => sa3d = atom.into(),
                 Any::Unknown(kind, body) if kind == WAVE => {
                     if let Some(atom) = wave_child::<Ac3SpecificBox>(&body)? {
                         dac3 = Some(atom);
@@ -35,12 +39,14 @@ impl Atom for Ac3 {
         Ok(Self {
             audio,
             dac3: dac3.ok_or(Error::MissingBox(Ac3SpecificBox::KIND))?,
+            sa3d,
         })
     }
 
     fn encode_body<B: BufMut>(&self, buf: &mut B) -> Result<()> {
         self.audio.encode(buf)?;
         self.dac3.encode(buf)?;
+        self.sa3d.encode(buf)?;
         Ok(())
     }
 }
@@ -184,7 +190,8 @@ mod tests {
                     acmod: 2,
                     lfeon: false,
                     bit_rate_code: 10
-                }
+                },
+                sa3d: None,
             }
         );
     }
@@ -206,6 +213,7 @@ mod tests {
                 lfeon: false,
                 bit_rate_code: 10,
             },
+            sa3d: None,
         };
 
         let mut buf = Vec::new();

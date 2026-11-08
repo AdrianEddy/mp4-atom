@@ -5,6 +5,8 @@ use crate::*;
 pub struct Flac {
     pub audio: Audio,
     pub dfla: Dfla,
+    /// The spatial-audio box: the channels are an ambisonic sound field.
+    pub sa3d: Option<Sa3d>,
 }
 
 impl Atom for Flac {
@@ -14,9 +16,11 @@ impl Atom for Flac {
         let audio = Audio::decode(buf)?;
 
         let mut dfla = None;
+        let mut sa3d = None;
         while let Some(atom) = Any::decode_maybe(buf)? {
             match atom {
                 Any::Dfla(atom) => dfla = atom.into(),
+                Any::Sa3d(atom) => sa3d = atom.into(),
                 unknown => Self::decode_unknown(&unknown)?,
             }
         }
@@ -25,12 +29,14 @@ impl Atom for Flac {
         Ok(Self {
             audio,
             dfla: dfla.ok_or(Error::MissingBox(Dfla::KIND))?,
+            sa3d,
         })
     }
 
     fn encode_body<B: BufMut>(&self, buf: &mut B) -> Result<()> {
         self.audio.encode(buf)?;
         self.dfla.encode(buf)?;
+        self.sa3d.encode(buf)?;
         Ok(())
     }
 }
