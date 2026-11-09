@@ -32,11 +32,14 @@ impl Atom for Trak {
     const KIND: FourCC = FourCC::new(b"trak");
 
     // QuickTime's order (QTFF), which FFmpeg's `movenc` writes too: the edit
-    // list and the track references before the media.
+    // list and the track references before the media. A `meta` or `udta` that
+    // does not decode, or a second one, costs only itself: they hold the
+    // track's tags.
     nested! {
         required: [ Tkhd, Mdia ],
         optional: [ Edts, Meta, Senc, Tref, Udta ],
         multiple: [ Uuid ],
         order: [ Tkhd, Edts, Tref, Meta, Mdia, Senc, Udta, Uuid ],
+        skip_malformed: [ Meta, Udta ],
     }
 }

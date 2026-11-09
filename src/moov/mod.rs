@@ -27,18 +27,52 @@ impl Atom for Moov {
     const KIND: FourCC = FourCC::new(b"moov");
 
     // `mvhd` first and the tracks before `mvex` / `udta`, as QuickTime and
-    // ISO/IEC 14496-12 order them.
+    // ISO/IEC 14496-12 order them. A `meta` or `udta` that does not decode,
+    // or a second one, costs only itself: they hold the movie's tags.
     nested! {
         required: [ Mvhd ],
         optional: [ Ainf, Meta, Mvex, Udta ],
         multiple: [ Trak ],
         order: [ Mvhd, Meta, Trak, Mvex, Udta, Ainf ],
+        skip_malformed: [ Meta, Udta ],
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// `bytes` (one box) with `child` appended to its body, its size grown.
+    fn with_child(mut bytes: Vec<u8>, child: &[u8]) -> Vec<u8> {
+        bytes.extend_from_slice(child);
+        let size = u32::try_from(bytes.len()).unwrap();
+        bytes[..4].copy_from_slice(&size.to_be_bytes());
+        bytes
+    }
+
+    /// A `meta` or `udta` that does not decode, and a second one, are what
+    /// `skip_malformed` is handed: under `strict` and in these tests that error
+    /// stands. Outside them each is skipped and the `moov` decodes
+    /// (`tests/malformed_tags.rs`).
+    #[test]
+    fn a_malformed_or_second_meta_or_udta_reaches_skip_malformed() {
+        let mut empty = Vec::new();
+        Moov::default().encode(&mut empty).unwrap();
+
+        let short_meta = with_child(empty.clone(), b"\x00\x00\x00\x0ameta\x00\x00");
+        assert!(matches!(
+            Moov::decode(&mut short_meta.as_slice()),
+            Err(Error::OverDecode(kind)) if kind == Meta::KIND
+        ));
+
+        let mut udta = Vec::new();
+        Udta::default().encode(&mut udta).unwrap();
+        let two_udtas = with_child(with_child(empty, &udta), &udta);
+        assert!(matches!(
+            Moov::decode(&mut two_udtas.as_slice()),
+            Err(Error::DuplicateBox(kind)) if kind == Udta::KIND
+        ));
+    }
 
     #[test]
     fn rejects_truncated_child_body() {

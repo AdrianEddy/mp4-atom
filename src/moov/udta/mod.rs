@@ -77,21 +77,33 @@ impl Atom for Udta {
             // QuickTime keeps any number of text items, one per type and
             // language as a rule, in file order.
             match header.kind {
-                Chpl::KIND if chpl.is_some() => {
-                    skip_malformed(Chpl::KIND, size, buf, Error::DuplicateBox(Chpl::KIND))?
-                }
+                Chpl::KIND if chpl.is_some() => skip_malformed(
+                    Chpl::KIND,
+                    Udta::KIND,
+                    size,
+                    buf,
+                    Error::DuplicateBox(Chpl::KIND),
+                )?,
                 Chpl::KIND => chpl = decode_or_skip(&header, size, buf)?,
                 Cprt::KIND => cprt.extend(decode_or_skip(&header, size, buf)?),
                 Kind::KIND => kind.extend(decode_or_skip(&header, size, buf)?),
-                Meta::KIND if meta.is_some() => {
-                    skip_malformed(Meta::KIND, size, buf, Error::DuplicateBox(Meta::KIND))?
-                }
+                Meta::KIND if meta.is_some() => skip_malformed(
+                    Meta::KIND,
+                    Udta::KIND,
+                    size,
+                    buf,
+                    Error::DuplicateBox(Meta::KIND),
+                )?,
                 Meta::KIND => meta = decode_or_skip(&header, size, buf)?,
                 Rtng::KIND => rtng.extend(decode_or_skip(&header, size, buf)?),
                 Loci::KIND => loci.extend(decode_or_skip(&header, size, buf)?),
-                Xmp::KIND if xmp.is_some() => {
-                    skip_malformed(Xmp::KIND, size, buf, Error::DuplicateBox(Xmp::KIND))?
-                }
+                Xmp::KIND if xmp.is_some() => skip_malformed(
+                    Xmp::KIND,
+                    Udta::KIND,
+                    size,
+                    buf,
+                    Error::DuplicateBox(Xmp::KIND),
+                )?,
                 Xmp::KIND => xmp = Some(Xmp::decode_atom(&header, buf)?),
                 kind if UdtaText::is_text_kind(kind) => {
                     text.push(UdtaText::decode_body(kind, &mut buf.slice(size)));
@@ -137,27 +149,14 @@ impl Atom for Udta {
 }
 
 /// A child of `size` bytes typed as `T`, or `None` when it does not decode: it
-/// is then skipped ([`skip_malformed`]).
+/// is then skipped ([`skip_malformed`]). That covers a `chpl`, `cprt`, `kind`,
+/// `meta`, `rtng` or `loci` that does not decode; a second `chpl`, `meta` or
+/// `XMP_` is skipped unread.
 fn decode_or_skip<T: Atom, B: Buf>(header: &Header, size: usize, buf: &mut B) -> Result<Option<T>> {
     match T::decode_atom(header, buf) {
         Ok(atom) => Ok(Some(atom)),
-        Err(err) => skip_malformed(T::KIND, size, buf, err).map(|()| None),
+        Err(err) => skip_malformed(T::KIND, Udta::KIND, size, buf, err).map(|()| None),
     }
-}
-
-/// Skip a `chpl`, `cprt`, `kind`, `meta`, `rtng` or `loci` that does not
-/// decode, or a second `chpl`, `meta` or `XMP_`, as an unknown child is
-/// skipped: one malformed tag must not make the movie unreadable, and
-/// libavformat never fails a movie over a user-data box. Under `strict` the
-/// error stands.
-fn skip_malformed<B: Buf>(kind: FourCC, size: usize, buf: &mut B, err: Error) -> Result<()> {
-    if cfg!(feature = "strict") || cfg!(test) {
-        tracing::error!(%kind, %err, "malformed udta child");
-        return Err(err);
-    }
-    tracing::warn!(%kind, %err, "malformed udta child skipped");
-    buf.advance(size);
-    Ok(())
 }
 
 #[cfg(test)]

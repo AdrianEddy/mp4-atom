@@ -1,4 +1,4 @@
-use crate::{Any, FourCC, MAX_ATOM_DEPTH};
+use crate::{Any, Buf, FourCC, MAX_ATOM_DEPTH};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -83,5 +83,28 @@ pub(crate) fn decode_unknown(atom: &Any, parent: FourCC) -> Result<()> {
     } else {
         tracing::warn!(kind = %atom.kind(), parent = %parent, "unexpected box");
     }
+    Ok(())
+}
+
+/// Skip a child of `size` bytes that does not decode, or a second copy of one
+/// that `parent` holds at most once, as an unknown child is skipped: the boxes
+/// that carry tags (`meta`, `udta` and the typed `udta` children) were unknown
+/// children before this crate typed them, and one malformed tag must not make
+/// the movie unreadable. libavformat reads past every one of them. `buf` stands
+/// at the child's body. Under `strict` (and in this crate's tests) the error
+/// stands.
+pub(crate) fn skip_malformed<B: Buf>(
+    kind: FourCC,
+    parent: FourCC,
+    size: usize,
+    buf: &mut B,
+    err: Error,
+) -> Result<()> {
+    if cfg!(feature = "strict") || cfg!(test) {
+        tracing::error!(%kind, %parent, %err, "malformed box");
+        return Err(err);
+    }
+    tracing::warn!(%kind, %parent, %err, "malformed box skipped");
+    buf.advance(size);
     Ok(())
 }

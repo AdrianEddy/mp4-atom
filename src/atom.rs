@@ -176,13 +176,48 @@ macro_rules! nested {
     // container whose readers expect its children in a set order (QuickTime's
     // `trak`, `minf`). Decoding accepts any order either way.
     (required: [$($required:ident),*$(,)?], optional: [$($optional:ident),*$(,)?], multiple: [$($multiple:ident),*$(,)?], order: [$($order:ident),*$(,)?],) => {
+        nested! {
+            required: [$($required),*],
+            optional: [$($optional),*],
+            multiple: [$($multiple),*],
+            order: [$($order),*],
+            skip_malformed: [],
+        }
+    };
+    // `skip_malformed` names the optional children a malformed copy of which
+    // must not fail the container — the boxes that carry tags (`meta`,
+    // `udta`): one that does not decode, and a second one, are skipped
+    // (`crate::skip_malformed`; an error under `strict`), the first kept.
+    (required: [$($required:ident),*$(,)?], optional: [$($optional:ident),*$(,)?], multiple: [$($multiple:ident),*$(,)?], order: [$($order:ident),*$(,)?], skip_malformed: [$($skip:ident),*$(,)?],) => {
         pastey::paste! {
             fn decode_body<B: Buf>(buf: &mut B) -> Result<Self> {
                 $( let mut [<$required:lower>] = None;)*
                 $( let mut [<$optional:lower>] = None;)*
                 $( let mut [<$multiple:lower>] = Vec::new();)*
 
-                while let Some(atom) = Any::decode_maybe(buf)? {
+                loop {
+                    // `Any::decode_maybe`, keeping the child's header: it is read
+                    // from a view, so an incomplete child leaves the buffer
+                    // untouched and ends the children.
+                    let remaining = buf.remaining();
+                    let mut peek = buf.slice(remaining);
+                    let Some(header) = Header::decode_maybe(&mut peek)? else { break };
+                    // Read by the `skip_malformed` arms alone.
+                    #[allow(unused_variables)]
+                    let Some(size) = header.size_within(peek.remaining()) else { break };
+                    buf.advance(remaining - peek.remaining());
+                    $(if header.kind == $skip::KIND && [<$skip:lower>].is_some() {
+                        skip_malformed($skip::KIND, Self::KIND, size, buf, Error::DuplicateBox($skip::KIND))?;
+                        continue;
+                    })*
+                    let atom = match Any::decode_atom(&header, buf) {
+                        Ok(atom) => atom,
+                        $(Err(err) if header.kind == $skip::KIND => {
+                            skip_malformed($skip::KIND, Self::KIND, size, buf, err)?;
+                            continue;
+                        })*
+                        Err(err) => return Err(err),
+                    };
                     match atom {
                         $(Any::$required(atom) => {
                             if [<$required:lower>].is_some() {
